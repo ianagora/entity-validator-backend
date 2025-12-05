@@ -996,9 +996,13 @@ def init_db():
                 existing_cols_lower.add(col.lower())
 
         # NEW: ensure charity_number exists for CCEW enrichment
-        if "charity_number" not in existing_cols_lower:
+        try:
             conn.execute('ALTER TABLE items ADD COLUMN "charity_number" TEXT')
             existing_cols_lower.add("charity_number")
+            print("[init_db] Added charity_number column to items table")
+        except sqlite3.OperationalError:
+            # Column already exists
+            pass
 
         # add any missing exact-schema columns (526)
         for col in ALL_SCHEMA_FIELDS:
