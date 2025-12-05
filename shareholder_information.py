@@ -177,8 +177,15 @@ def process_filing_type(company_number, filing_type):
             filing_found = True
             shareholders = []
 
+            # Limit to most recent 5 filings to avoid processing hundreds of documents
+            MAX_FILINGS_TO_CHECK = 5
+            filings_to_process = filings[:MAX_FILINGS_TO_CHECK]
+            
+            if len(filings) > MAX_FILINGS_TO_CHECK:
+                print(f"   Found {len(filings)} filings, limiting to {MAX_FILINGS_TO_CHECK} most recent")
+
             # Process filings in order (most recent first) until we find shareholders
-            for i, filing in enumerate(filings):
+            for i, filing in enumerate(filings_to_process):
                 if shareholders:  # If we already found shareholders, stop
                     break
 
@@ -186,7 +193,7 @@ def process_filing_type(company_number, filing_type):
                 filing_date = filing.get('date', 'unknown')
 
                 if doc_id:
-                    print(f"   Processing {filing_type} filing {i+1}/{len(filings)} ({filing_date}): {doc_id}")
+                    print(f"   Processing {filing_type} filing {i+1}/{len(filings_to_process)} ({filing_date}): {doc_id}")
 
                     # Get document metadata
                     try:
@@ -226,7 +233,7 @@ def process_filing_type(company_number, filing_type):
                     continue
 
             if not shareholders:
-                print(f"   No shareholders found in any of the {len(filings)} {filing_type} filings")
+                print(f"   No shareholders found in the {len(filings_to_process)} {filing_type} filings checked (out of {len(filings)} total)")
         else:
             print(f"   No {filing_type} filings found for this company")
             filing_found = False
