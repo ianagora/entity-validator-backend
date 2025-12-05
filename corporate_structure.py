@@ -144,11 +144,17 @@ def build_ownership_tree(
     print(f"{indent}{'='*60}")
     
     # Extract shareholders for this company (or use pre-extracted for root)
+    shareholder_result = {}  # Initialize to prevent variable scope errors
+    
     try:
         if depth == 0 and initial_shareholders is not None:
             # Use pre-extracted shareholders for root company (from PSC or filings)
             all_shareholders = initial_shareholders
             extraction_status = 'pre-extracted'
+            shareholder_result = {
+                'total_shares': 0,  # Total shares unknown when using PSC data
+                'extraction_status': 'pre-extracted'
+            }
             print(f"{indent}📊 Using pre-extracted shareholders (from PSC or filings)")
             print(f"{indent}👥 Total shareholders: {len(all_shareholders)}")
             print(f"{indent}DEBUG: initial_shareholders = {initial_shareholders}")
