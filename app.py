@@ -20,10 +20,6 @@ from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from starlette.status import HTTP_302_FOUND
 from resolver import ccew_candidates
-
-from flask import Flask
-app = Flask(__name__)
-
 from resolver import canonicalise_name
 from schema import SCHEMA_ENTITY_FIELDS, LP_PREFIX, LP_COUNT
 
