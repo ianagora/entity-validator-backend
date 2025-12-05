@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Batch Upload – Scrutinise{% endblock %}
+{% block page_title %}Batch Upload{% endblock %}
+
+{% block content %}
+<form action="/batch-upload" method="post" enctype="multipart/form-data">
+  <div style="display:grid; gap:12px; max-width:620px;">
+    {% if error %}
+      <div style="background:#fee2e2; border:1px solid #fecaca; color:#991b1b; padding:10px 12px; border-radius:10px;">
+        {{ error }}
+      </div>
+    {% endif %}
+    <label style="font-weight:700;">Select CSV/XLSX</label>
+    <input type="file" name="file" accept=".csv,.xlsx,.xls" required
+           style="border:1px solid #e5e7eb; padding:10px; border-radius:10px; background:#fff;">
+    <div class="toolbar">
+      <button class="btn primary" type="submit"><i class="fa-solid fa-play"></i> Run Batch</button>
+    </div>
+  </div>
+</form>
+{% endblock %}

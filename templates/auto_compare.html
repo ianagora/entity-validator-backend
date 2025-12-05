@@ -1,0 +1,194 @@
+{% extends "base.html" %}
+{% block title %}Compare – {{ item.entity_name or item.input_name }}{% endblock %}
+{% block page_title %}Compare vs Upload{% endblock %}
+
+{% block content %}
+<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+  <a href="/auto/{{ item.id }}" class="btn" style="padding:6px 10px;">
+    <i class="fa-solid fa-arrow-left"></i> Back to Auto Result
+  </a>
+</div>
+
+<div class="card">
+  <div class="card-title">Summary</div>
+  <table>
+    <tbody>
+      <tr><th style="width:220px;">Input</th><td>{{ item.input_name }}</td></tr>
+      <tr><th>Matched Name</th><td>{{ item.entity_name or '-' }}</td></tr>
+      <tr><th>Registry</th>
+        <td>
+          {% if is_ch %}
+            <span class="badge" style="background:#eef2ff;border:1px solid #c7d2fe;color:#3730a3;">Companies House</span>
+          {% elif is_cc %}
+            <span class="badge" style="background:#ecfeff;border:1px solid #a5f3fc;color:#155e75;">Charity Commission</span>
+          {% else %}
+            <span class="badge">Unknown</span>
+          {% endif %}
+        </td>
+      </tr>
+      <tr><th>Pipeline Status</th><td>{{ item.pipeline_status }}</td></tr>
+    </tbody>
+  </table>
+</div>
+
+{# ================= MI SUMMARY (counts from visible rows only) ================= #}
+{% set total_rows = rows|length %}
+{% set matched_cnt  = rows|selectattr('outcome','equalto','matched')|list|length %}
+{% set mismatch_cnt = rows|selectattr('outcome','equalto','mismatch')|list|length %}
+{% set missing_cnt  = rows|selectattr('outcome','equalto','missing')|list|length %}
+{% set enriched_cnt = rows|selectattr('outcome','equalto','enriched')|list|length %}
+
+<div class="card" style="margin-top:12px;">
+  <div class="card-title">MI Summary (Visible Fields)</div>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;">
+    <div class="badge" style="background:#f3f4f6;border:1px solid #e5e7eb;color:#374151;">Total: {{ total_rows }}</div>
+
+    <div class="badge" style="background:#e7f7e9;border:1px solid #86efac;color:#166534;">
+      Matched: {{ matched_cnt }}
+    </div>
+
+    <div class="badge" style="background:#fee2e2;border:1px solid #fecaca;color:#991b1b;">
+      Mismatch: {{ mismatch_cnt }}
+    </div>
+
+    <div class="badge" style="background:#f3f4f6;border:1px solid #e5e7eb;color:#374151;">
+      Missing: {{ missing_cnt }}
+    </div>
+
+    <div class="badge" style="background:#e8f0fe;border:1px solid #bfdbfe;color:#1d4ed8;">
+      Enriched: {{ enriched_cnt }}
+    </div>
+  </div>
+  <p style="color:#64748b;margin-top:8px;">
+    Counts reflect only the fields shown in the “Field Comparison” table (excludes additional enriched fields with no matching upload column).
+  </p>
+</div>
+{# ================= END MI SUMMARY ================= #}
+
+<div class="card" style="margin-top:12px;">
+  <div class="card-title">Field Comparison</div>
+  <table>
+    <thead>
+      <tr>
+        <th style="width:26%;">Field (Upload Schema)</th>
+        <th style="width:30%;">Uploaded Value</th>
+        <th style="width:30%;">Enriched Value</th>
+        <th style="width:14%;">Outcome</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+        {% set bg =
+          '#fef9c3' if r.status == 'diff' else
+          '#fee2e2' if r.status == 'missing_enriched' else
+          '#ecfdf5' if r.status == 'same' else
+          '#f1f5f9' %}
+        <tr style="background: {{ bg }};">
+          <td>
+            {{ r.field }}
+            {% if r.enriched_key and not r.field.startswith('(extra)') %}
+              <div style="color:#64748b;font-size:12px;">
+                {% if r.enriched_key == '(mapped)' %}
+                  <span class="badge" style="background:#eef2ff;border:1px solid #c7d2fe;color:#3730a3;">Authoritative mapping</span>
+                {% elif r.enriched_key == '(officer)' %}
+                  <span class="badge" style="background:#ecfdf5;border:1px solid #86efac;color:#166534;">Officer match</span>
+                {% elif r.enriched_key == '(psc)' %}
+                  <span class="badge" style="background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;">PSC match</span>
+                {% else %}
+                  ↳ matched to: <code style="word-break:break-all;">{{ r.enriched_key }}</code>
+                {% endif %}
+              </div>
+            {% elif r.field.startswith('(extra)') %}
+              <div style="color:#64748b;font-size:12px;">(no matching upload field)</div>
+            {% endif %}
+          </td>
+          <td>{{ r.uploaded if r.uploaded is not none and r.uploaded != '' else '—' }}</td>
+          <td>{{ r.enriched if r.enriched is not none and r.enriched != '' else '—' }}</td>
+
+          <td>
+            {% if r.outcome == 'matched' %}
+              <span class="badge" style="background:#e7f7e9;border:1px solid #86efac;color:#166534;">Matched</span>
+            {% elif r.outcome == 'enriched' %}
+              <span class="badge" style="background:#e8f0fe;border:1px solid #bfdbfe;color:#1d4ed8;">Enriched</span>
+            {% elif r.outcome == 'missing' %}
+              <span class="badge" style="background:#f3f4f6;border:1px solid #e5e7eb;color:#374151;">Missing</span>
+            {% elif r.outcome == 'mismatch' %}
+              <span class="badge" style="background:#fee2e2;border:1px solid #fecaca;color:#991b1b;">Mismatch</span>
+            {% else %}
+              <span class="badge">—</span>
+            {% endif %}
+          </td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <p style="color:#64748b;margin-top:8px;">
+    Legend (row background): 
+    <span style="background:#ecfdf5;border:1px solid #86efac;padding:2px 6px;border-radius:6px;">same</span>
+    <span style="background:#fef9c3;border:1px solid #fde68a;padding:2px 6px;border-radius:6px;margin-left:6px;">different</span>
+    <span style="background:#fee2e2;border:1px solid #fecaca;padding:2px 6px;border-radius:6px;margin-left:6px;">missing enriched</span>
+    <span style="background:#f1f5f9;border:1px solid #e2e8f0;padding:2px 6px;border-radius:6px;margin-left:6px;">extra enriched</span>
+  </p>
+
+  <p style="color:#64748b;margin-top:4px;">
+    Outcome badges:
+    <span class="badge" style="background:#e7f7e9;border:1px solid #86efac;color:#166534;margin-left:6px;">Matched</span>
+    <span class="badge" style="background:#e8f0fe;border:1px solid #bfdbfe;color:#1d4ed8;margin-left:6px;">Enriched</span>
+    <span class="badge" style="background:#f3f4f6;border:1px solid #e5e7eb;color:#374151;margin-left:6px;">Missing</span>
+    <span class="badge" style="background:#fee2e2;border:1px solid #fecaca;color:#991b1b;margin-left:6px;">Mismatch</span>
+  </p>
+</div>
+
+{% if extra_rows and extra_rows|length > 0 %}
+<div class="card" style="margin-top:12px;">
+  <div class="card-title">Additional Enriched Fields</div>
+
+  <details>
+    <summary style="cursor:pointer;user-select:none;">
+      Show fields from enrichment with no matching upload column
+      <span style="color:#64748b;">({{ extra_rows|length }})</span>
+    </summary>
+
+    <div style="margin-top:10px;">
+      <table>
+        <thead>
+          <tr>
+            <th style="width:40%;">Enriched Field</th>
+            <th style="width:46%;">Value</th>
+            <th style="width:14%;">Outcome</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in extra_rows %}
+            <tr style="background:#f1f5f9;">
+              <td>
+                {{ r.field }}
+                {% if r.enriched_key %}
+                  <div style="color:#64748b;font-size:12px;">↳ source: <code style="word-break:break-all;">{{ r.enriched_key }}</code></div>
+                {% endif %}
+                <div style="color:#64748b;font-size:12px;">(no matching upload field)</div>
+              </td>
+              <td>{{ r.enriched if r.enriched is not none and r.enriched != '' else '—' }}</td>
+              <td>
+                {% if r.outcome == 'enriched' %}
+                  <span class="badge" style="background:#e8f0fe;border:1px solid #bfdbfe;color:#1d4ed8;">Enriched</span>
+                {% elif r.outcome == 'matched' %}
+                  <span class="badge" style="background:#e7f7e9;border:1px solid #86efac;color:#166534;">Matched</span>
+                {% elif r.outcome == 'missing' %}
+                  <span class="badge" style="background:#f3f4f6;border:1px solid #e5e7eb;color:#374151;">Missing</span>
+                {% elif r.outcome == 'mismatch' %}
+                  <span class="badge" style="background:#fee2e2;border:1px solid #fecaca;color:#991b1b;">Mismatch</span>
+                {% else %}
+                  <span class="badge">—</span>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </details>
+</div>
+{% endif %}
+{% endblock %}

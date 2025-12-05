@@ -1,0 +1,39 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>{% block title %}Admin{% endblock %}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 0; background:#f5f7fa; }
+    header { background:#0a1e3c; color:#fff; padding:12px 20px; display:flex; justify-content:space-between; align-items:center; }
+    header a { color:#fff; text-decoration:none; margin-left:12px; }
+    .container { max-width: 1100px; margin: 24px auto; background:#fff; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,.06); }
+    table { width:100%; border-collapse:collapse; }
+    th, td { border: 1px solid #e5e7eb; padding: 8px; font-size:14px;}
+    th { background:#f9fafb; text-align:left; }
+    .btn { display:inline-block; padding:8px 12px; border-radius:8px; border:1px solid #2563eb; color:#2563eb; text-decoration:none; }
+    .btn:hover { background:#eff6ff; }
+    .btn-danger { border-color:#b91c1c; color:#b91c1c; }
+    .actions a { margin-right:8px; }
+    .row { display:flex; gap: 16px; }
+    .col { flex:1; }
+    label { display:block; font-weight:600; margin-top:10px; }
+    input[type="text"], input[type="email"], input[type="password"], select { width:100%; padding:8px; border:1px solid #e5e7eb; border-radius:8px; }
+  </style>
+</head>
+<body>
+  <header>
+    <div><strong>SCRUTINISE</strong> — Admin</div>
+    <nav>
+      <a href="/queue/manual">Manual Queue</a>
+      <a href="/queue/auto">Auto Queue</a>
+      <a href="/admin/users">Users</a>
+      <a href="/logout">Logout</a>
+    </nav>
+  </header>
+  <div class="container">
+    {% block content %}{% endblock %}
+  </div>
+</body>
+</html>

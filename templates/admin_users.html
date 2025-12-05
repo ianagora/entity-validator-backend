@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}User Management – Scrutinise{% endblock %}
+{% block page_title %}User Management{% endblock %}
+
+{% block content %}
+<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:14px;">
+  <div style="color:#64748b;">Manage accounts and roles.</div>
+  <a class="btn primary" href="/admin/users/new"><i class="fa-solid fa-user-plus"></i> New User</a>
+</div>
+
+{% if users|length == 0 %}
+  <p style="color:#64748b;">No users yet.</p>
+{% else %}
+  <table>
+    <thead>
+      <tr>
+        <th>User</th>
+        <th>Roles</th>
+        <th>Status</th>
+        <th>Created</th>
+        <th style="width:1%;">Action</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for u in users %}
+      <tr>
+        <td>
+          <div style="font-weight:700;">{{ u.full_name or u.email }}</div>
+          <div style="color:#64748b; font-size:13px;">{{ u.email }}</div>
+        </td>
+        <td>
+          {% set roles = user_roles.get(u.id, []) %}
+          {% if roles|length == 0 %}
+            <span style="color:#64748b;">—</span>
+          {% else %}
+            {% for r in roles %}
+              <span style="background:#e5efff;border:1px solid #dbe7ff;color:#0b3b8c;
+                           padding:3px 8px;border-radius:999px;font-size:12px;margin-right:6px;">
+                {{ r }}
+              </span>
+            {% endfor %}
+          {% endif %}
+        </td>
+        <td>
+          {% if u.is_active %}
+            <span class="btn" style="cursor:default; background:#ecfdf5; border-color:#a7f3d0; color:#065f46;">Active</span>
+          {% else %}
+            <span class="btn" style="cursor:default; background:#fef2f2; border-color:#fecaca; color:#991b1b;">Disabled</span>
+          {% endif %}
+        </td>
+        <td style="white-space:nowrap;">{{ u.created_at }}</td>
+        <td><a class="btn" href="/admin/users/{{ u.id }}/edit"><i class="fa-solid fa-pen-to-square"></i> Edit</a></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+{% endif %}
+{% endblock %}

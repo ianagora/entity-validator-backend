@@ -1,0 +1,62 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Enrichment Results</title>
+  <style>
+    body { font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; }
+    .wrap { max-width: 900px; margin: 0 auto; }
+    table { border-collapse: collapse; width: 100%; margin-top: 12px; }
+    th, td { border: 1px solid #e5e7eb; padding: 8px; font-size: 14px; }
+    th { background: #f9fafb; text-align: left; }
+    .bar { margin: 16px 0; }
+    a.btn { display:inline-block; padding:8px 12px; border-radius:8px; border:1px solid #2563eb; color:#2563eb; text-decoration:none; margin-right:8px; }
+    a.btn:hover { background:#eff6ff; }
+    .err { color:#b91c1c; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h2>Enrichment Results</h2>
+
+    {% if enriched_files %}
+      <table>
+        <thead>
+          <tr>
+            <th>Input</th>
+            <th>Company No.</th>
+            <th>Downloads</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for f in enriched_files %}
+            <tr>
+              <td>{{ f.input_name }}</td>
+              <td>{{ f.company_number }}</td>
+              <td>
+                <a class="btn" href="/download?path={{ f.json_path }}">JSON</a>
+                <a class="btn" href="/download?path={{ f.xlsx_path }}">XLSX</a>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p>No items were selected to enrich.</p>
+    {% endif %}
+
+    {% if errors and errors|length > 0 %}
+      <h3>Errors</h3>
+      <ul>
+        {% for e in errors %}
+          <li class="err">{{ e.selection }} — {{ e.error }}</li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+
+    <div class="bar">
+      <a class="btn" href="/">← Back to upload</a>
+    </div>
+  </div>
+</body>
+</html>

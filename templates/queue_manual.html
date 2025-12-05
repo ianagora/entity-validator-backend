@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block title %}Exceptions – Scrutinise{% endblock %}
+{% block page_title %}Exceptions{% endblock %}
+
+{% block content %}
+
+  {# Skipped-duplicates banner #}
+  {% if request.query_params.get('skipped') and request.query_params.get('skipped')|int > 0 %}
+  <div style="background-color:#fff3cd; color:#856404; padding:10px; margin-bottom:15px; border:1px solid #ffeeba; border-radius:4px;">
+    ⚠️ {{ request.query_params.get('skipped') }} duplicate{{ 's' if request.query_params.get('skipped')|int > 1 else '' }}
+    skipped from this batch (already screened).
+  </div>
+  {% endif %}
+
+  {% if rows|length == 0 %}
+    <p style="color:#64748b;">Nothing pending review.</p>
+  {% else %}
+    <style>
+      .btn.small {
+        padding: 5px 10px;
+        font-size: 13px;
+        border-radius: 6px;
+      }
+      td.actions {
+        white-space: nowrap;
+        text-align: right;
+      }
+    </style>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Created</th>
+          <th>Input Name</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for r in rows %}
+        <tr>
+          <!-- Format ISO string to dd-mm-yyyy safely -->
+          <td style="white-space:nowrap;">
+            {% set iso = (r.created_at or '') %}
+            {% set d = iso[:10] %} {# 'YYYY-MM-DD' or '' #}
+            {{ d and (d[8:10] ~ '-' ~ d[5:7] ~ '-' ~ d[0:4]) or '' }}
+          </td>
+          <td>{{ r.input_name }}</td>
+          <td class="actions">
+            <a class="btn primary small" href="/item/{{ r.id }}">
+              <i class="fa-solid fa-magnifying-glass"></i> Review
+            </a>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  {% endif %}
+{% endblock %}

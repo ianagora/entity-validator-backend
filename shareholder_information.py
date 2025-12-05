@@ -1,0 +1,451 @@
+#!/usr/bin/env python3
+"""
+Test script for CS01 PDF retrieval functionality
+"""
+
+from resolver import get_cs01_filings_for_company, get_ar01_filings_for_company, get_in01_filings_for_company, get_document_metadata, download_cs01_pdf, download_ar01_pdf, download_in01_pdf
+import os
+import pdfplumber
+import re
+import json
+from openai import OpenAI
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+try:
+    import pytesseract
+    from PIL import Image
+    OCR_AVAILABLE = True
+except ImportError:
+    OCR_AVAILABLE = False
+
+def extract_text_with_ocr(pdf_path):
+    """Extract text from PDF using OCR"""
+    full_text = ""
+    with pdfplumber.open(pdf_path) as pdf:
+        for page in pdf.pages:
+            # Convert page to image
+            page_image = page.to_image(resolution=300).original
+
+            # Convert to PIL Image if needed
+            if not isinstance(page_image, Image.Image):
+                page_image = Image.fromarray(page_image)
+
+            # Extract text with OCR
+            text = pytesseract.image_to_string(page_image)
+            if text:
+                full_text += text + "\n"
+
+    return full_text
+
+def extract_shareholder_info_with_openai(pdf_path):
+    """Extract shareholder information from CS01 PDF using OpenAI GPT-4o"""
+    # Extract text from PDF
+    full_text = ""
+    with pdfplumber.open(pdf_path) as pdf:
+        for page in pdf.pages:
+            text = page.extract_text()
+            if text:
+                full_text += text + "\n"
+
+    # If no text extracted and OCR is available, try OCR
+    if not full_text.strip() and OCR_AVAILABLE:
+        try:
+            full_text = extract_text_with_ocr(pdf_path)
+        except Exception as e:
+            print(f"   OCR failed: {e}")
+
+    if not full_text.strip():
+        print("   No text extracted from PDF")
+        return []
+
+    # Initialize OpenAI client
+    try:
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    except Exception as e:
+        print(f"   OpenAI client initialization failed: {e}")
+        print("   Please ensure OPENAI_API_KEY is set in the .env file")
+        return []
+
+    prompt = f"""
+You are an expert at extracting shareholder information from UK company filings (CS01 forms).
+
+Please analyze the following text from a CS01 PDF and extract all shareholder information. Return ONLY a valid JSON object with the following structure:
+
+{{
+  "shareholders": [
+    {{
+      "name": "FULL SHAREHOLDER NAME",
+      "shares_held": NUMBER_OF_SHARES,
+      "share_class": "SHARE_CLASS_TYPE",
+      "transfers": [
+        {{ "amount": TRANSFER_AMOUNT, "date": "YYYY-MM-DD" }}
+      ]
+    }}
+  ]
+}}
+
+Rules:
+- Extract ALL shareholders mentioned in the document
+- For transfers array: include any transfer information found (amount and date), or leave as empty array [] if no transfers mentioned
+- shares_held should be a number (integer)
+- share_class is typically "ORDINARY" but could be other types
+- If no shareholders are found, return {{"shareholders": []}}
+- Make sure names are properly capitalized and complete
+- Look for sections like "Full details of Shareholders" or similar
+
+Text from PDF:
+{full_text}
+"""
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": "You are a precise data extraction assistant. Return only valid JSON."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.1,
+            max_tokens=2000
+        )
+
+        result_text = response.choices[0].message.content.strip()
+
+        # Clean up the response (remove markdown code blocks if present)
+        if result_text.startswith("```json"):
+            result_text = result_text[7:]
+        if result_text.startswith("```"):
+            result_text = result_text[3:]
+        if result_text.endswith("```"):
+            result_text = result_text[:-3]
+
+        result_text = result_text.strip()
+
+        # Parse the JSON
+        result = json.loads(result_text)
+        print(f"   Raw JSON response: {json.dumps(result, indent=2)}")
+        return result.get("shareholders", [])
+
+    except Exception as e:
+        print(f"   Error extracting with OpenAI: {e}")
+        return []
+
+def process_filing_type(company_number, filing_type):
+    """Process a specific filing type and return filing status and shareholder data"""
+    shareholders = []
+    filing_found = False
+
+    try:
+        if filing_type == "CS01":
+            print(f"Getting CS01 filings...")
+            filings = get_cs01_filings_for_company(company_number)
+            download_func = download_cs01_pdf
+        elif filing_type == "AR01":
+            print(f"Getting AR01 filings...")
+            filings = get_ar01_filings_for_company(company_number)
+            download_func = download_ar01_pdf
+        elif filing_type == "IN01":
+            print(f"Getting IN01 filings...")
+            filings = get_in01_filings_for_company(company_number)
+            download_func = download_in01_pdf
+        else:
+            print(f"Unknown filing type: {filing_type}")
+            return False, []
+
+        print(f"   Found {len(filings)} {filing_type} filings")
+
+        if filings:
+            filing_found = True
+            shareholders = []
+
+            # Process filings in order (most recent first) until we find shareholders
+            for i, filing in enumerate(filings):
+                if shareholders:  # If we already found shareholders, stop
+                    break
+
+                doc_id = filing.get('document_id')
+                filing_date = filing.get('date', 'unknown')
+
+                if doc_id:
+                    print(f"   Processing {filing_type} filing {i+1}/{len(filings)} ({filing_date}): {doc_id}")
+
+                    # Get document metadata
+                    try:
+                        metadata = get_document_metadata(doc_id)
+                        print(f"   Document size: {metadata.get('document_metadata', {}).get('size', 'unknown')} bytes")
+                    except Exception as e:
+                        print(f"   Warning: Could not get metadata: {e}")
+
+                    # Download PDF
+                    print(f"   Downloading {filing_type} PDF...")
+                    try:
+                        pdf_content = download_func(doc_id)
+                        print(f"   Successfully downloaded {len(pdf_content)} bytes")
+
+                        # Save PDF to file
+                        os.makedirs('shareholder_information_pdfs', exist_ok=True)
+                        pdf_filename = f"{filing_type}_{company_number}_{doc_id}.pdf"
+                        pdf_path = os.path.join('shareholder_information_pdfs', pdf_filename)
+                        with open(pdf_path, 'wb') as f:
+                            f.write(pdf_content)
+                        print(f"   PDF saved to: {pdf_path}")
+
+                        # Extract shareholder information using OpenAI
+                        print(f"   Extracting shareholder information using OpenAI GPT-4o...")
+                        shareholders = extract_shareholder_info_with_openai(pdf_path)
+
+                        if shareholders:
+                            print(f"   ✅ Successfully extracted {len(shareholders)} shareholders from {filing_type} ({filing_date})")
+                        else:
+                            print(f"   No shareholders found in this {filing_type} filing, trying next one...")
+
+                    except Exception as e:
+                        print(f"   Error processing {filing_type} document {doc_id}: {e}")
+                        continue  # Try next filing
+                else:
+                    print(f"   No document ID found for {filing_type} filing {i+1}, skipping...")
+                    continue
+
+            if not shareholders:
+                print(f"   No shareholders found in any of the {len(filings)} {filing_type} filings")
+        else:
+            print(f"   No {filing_type} filings found for this company")
+            filing_found = False
+
+    except Exception as e:
+        print(f"Error processing {filing_type}: {e}")
+        filing_found = False
+
+    return filing_found, shareholders
+
+def calculate_shareholder_percentages(shareholders):
+    """Calculate percentage ownership for each shareholder"""
+    # Calculate total shares
+    total_shares = 0
+    for shareholder in shareholders:
+        try:
+            shares_held = shareholder.get('shares_held', 0)
+            if isinstance(shares_held, str):
+                # Remove commas and convert to int
+                shares_held = int(shares_held.replace(',', ''))
+            total_shares += int(shares_held)
+        except (ValueError, TypeError):
+            continue
+
+    # Calculate percentages
+    for shareholder in shareholders:
+        try:
+            shares_held = shareholder.get('shares_held', 0)
+            if isinstance(shares_held, str):
+                shares_held = int(shares_held.replace(',', ''))
+
+            if total_shares > 0:
+                percentage = (int(shares_held) / total_shares) * 100
+                shareholder['percentage'] = round(percentage, 2)
+            else:
+                shareholder['percentage'] = 0.0
+        except (ValueError, TypeError):
+            shareholder['percentage'] = 0.0
+
+    return shareholders, total_shares
+
+def identify_parent_companies(shareholders):
+    """Identify shareholders that are parent companies and separate them"""
+    parent_shareholders = []
+    regular_shareholders = []
+
+    parent_suffixes = ['limited', 'ltd', 'trust', 'plc', 'llp', 'lp']
+
+    for shareholder in shareholders:
+        name = shareholder.get('name', '').lower().strip()
+        is_parent = any(name.endswith(' ' + suffix) for suffix in parent_suffixes)
+
+        if is_parent:
+            parent_shareholders.append(shareholder)
+        else:
+            regular_shareholders.append(shareholder)
+
+    return regular_shareholders, parent_shareholders
+
+
+def extract_shareholders_for_company(company_number):
+    """Main function to extract shareholders using intelligent CS01 -> AR01 fallback"""
+    print(f"Extracting shareholder information for company {company_number}")
+    print("=" * 70)
+
+    status = {
+        "regular_shareholders": [],
+        "parent_shareholders": [],
+        "total_shares": 0,
+        "extraction_status": "",
+        "cs01_found": False,
+        "cs01_has_shareholders": False,
+        "ar01_found": False,
+        "ar01_has_shareholders": False,
+        "in01_found": False,
+        "in01_has_shareholders": False
+    }
+
+    # Step 1: Try CS01 first
+    print("Step 1: Attempting CS01 extraction...")
+    cs01_found, cs01_shareholders = process_filing_type(company_number, "CS01")
+    status["cs01_found"] = cs01_found
+    status["cs01_has_shareholders"] = len(cs01_shareholders) > 0
+
+    if cs01_found and cs01_shareholders:
+        print("\n✅ SUCCESS: Shareholder information found in CS01")
+        # Process shareholders: calculate percentages and separate into regular vs parent
+        shareholders_with_percentages, total_shares = calculate_shareholder_percentages(cs01_shareholders)
+        regular_shareholders, parent_shareholders = identify_parent_companies(shareholders_with_percentages)
+
+        status["regular_shareholders"] = regular_shareholders
+        status["parent_shareholders"] = parent_shareholders
+        status["total_shares"] = total_shares
+        status["extraction_status"] = "found"
+
+        if parent_shareholders:
+            print(f"Identified {len(parent_shareholders)} parent company shareholders")
+
+        return status
+
+    # Step 2: If CS01 failed or no shareholders, try AR01
+    print("\n" + "=" * 70)
+    print("Step 2: CS01 failed or no shareholders found, trying AR01...")
+    ar01_found, ar01_shareholders = process_filing_type(company_number, "AR01")
+    status["ar01_found"] = ar01_found
+    status["ar01_has_shareholders"] = len(ar01_shareholders) > 0
+
+    if ar01_found and ar01_shareholders:
+        print("\n✅ SUCCESS: Shareholder information found in AR01")
+        # Process shareholders: calculate percentages and separate into regular vs parent
+        shareholders_with_percentages, total_shares = calculate_shareholder_percentages(ar01_shareholders)
+        regular_shareholders, parent_shareholders = identify_parent_companies(shareholders_with_percentages)
+
+        status["regular_shareholders"] = regular_shareholders
+        status["parent_shareholders"] = parent_shareholders
+        status["total_shares"] = total_shares
+        status["extraction_status"] = "found"
+
+        if parent_shareholders:
+            print(f"Identified {len(parent_shareholders)} parent company shareholders")
+
+        return status
+
+    # Step 3: If AR01 failed or no shareholders, try IN01
+    print("\n" + "=" * 70)
+    print("Step 3: AR01 failed or no shareholders found, trying IN01...")
+    in01_found, in01_shareholders = process_filing_type(company_number, "IN01")
+    status["in01_found"] = in01_found
+    status["in01_has_shareholders"] = len(in01_shareholders) > 0
+
+    if in01_found and in01_shareholders:
+        print("\n✅ SUCCESS: Shareholder information found in IN01")
+        # Process shareholders: calculate percentages and separate into regular vs parent
+        shareholders_with_percentages, total_shares = calculate_shareholder_percentages(in01_shareholders)
+        regular_shareholders, parent_shareholders = identify_parent_companies(shareholders_with_percentages)
+
+        status["regular_shareholders"] = regular_shareholders
+        status["parent_shareholders"] = parent_shareholders
+        status["total_shares"] = total_shares
+        status["extraction_status"] = "found"
+
+        if parent_shareholders:
+            print(f"Identified {len(parent_shareholders)} parent company shareholders")
+
+        return status
+
+    # All three failed - determine the specific failure reason
+    print("\n❌ FAILURE: No shareholder information found in CS01, AR01, or IN01")
+
+    if status["cs01_found"] and not status["cs01_has_shareholders"]:
+        if status["ar01_found"] and not status["ar01_has_shareholders"]:
+            if status["in01_found"] and not status["in01_has_shareholders"]:
+                status["extraction_status"] = "cs01_ar01_in01_found_no_shareholders"
+            elif not status["in01_found"]:
+                status["extraction_status"] = "cs01_ar01_found_no_shareholders_in01_not_found"
+            else:
+                status["extraction_status"] = "cs01_ar01_found_no_shareholders_in01_unknown"
+        elif not status["ar01_found"]:
+            if status["in01_found"] and not status["in01_has_shareholders"]:
+                status["extraction_status"] = "cs01_found_no_shareholders_ar01_in01_found_no_shareholders"
+            elif not status["in01_found"]:
+                status["extraction_status"] = "cs01_found_no_shareholders_no_ar01_or_in01_filings"
+            else:
+                status["extraction_status"] = "cs01_found_no_shareholders_ar01_not_found_in01_unknown"
+    elif not status["cs01_found"]:
+        if status["ar01_found"] and not status["ar01_has_shareholders"]:
+            if status["in01_found"] and not status["in01_has_shareholders"]:
+                status["extraction_status"] = "cs01_not_found_ar01_in01_found_no_shareholders"
+            elif not status["in01_found"]:
+                status["extraction_status"] = "cs01_not_found_ar01_found_no_shareholders_in01_not_found"
+            else:
+                status["extraction_status"] = "cs01_not_found_ar01_found_no_shareholders_in01_unknown"
+        elif not status["ar01_found"]:
+            if status["in01_found"] and not status["in01_has_shareholders"]:
+                status["extraction_status"] = "no_cs01_or_ar01_filings_in01_found_no_shareholders"
+            elif not status["in01_found"]:
+                status["extraction_status"] = "no_cs01_ar01_or_in01_filings"
+            else:
+                status["extraction_status"] = "no_cs01_or_ar01_filings_in01_unknown"
+    else:
+        status["extraction_status"] = "unknown_failure"
+
+    return status
+
+def test_shareholder_extraction():
+    # INPUT: Company number - CHANGE THIS VALUE as needed
+    company_number = '16386380'
+
+    try:
+        result = extract_shareholders_for_company(company_number)
+
+        print("\n" + "=" * 70)
+        print("FINAL RESULTS:")
+        print("=" * 70)
+        print(f"Company: {company_number}")
+        print(f"Extraction Status: {result.get('extraction_status', 'unknown')}")
+        print(f"CS01 Found: {result.get('cs01_found', False)}, Has Shareholders: {result.get('cs01_has_shareholders', False)}")
+        print(f"AR01 Found: {result.get('ar01_found', False)}, Has Shareholders: {result.get('ar01_has_shareholders', False)}")
+        print(f"IN01 Found: {result.get('in01_found', False)}, Has Shareholders: {result.get('in01_has_shareholders', False)}")
+
+        all_shareholders = result.get('regular_shareholders', []) + result.get('parent_shareholders', [])
+
+        if all_shareholders:
+            print(f"Total shareholders found: {len(all_shareholders)}")
+            print(f"Total shares: {result.get('total_shares', 0)}")
+            print("\nShareholder Details:")
+
+            for i, shareholder in enumerate(all_shareholders, 1):
+                print(f"\n{i}. Name: {shareholder.get('name', 'Unknown')}")
+                print(f"   Shares Held: {shareholder.get('shares_held', 'Unknown')}")
+                print(f"   Percentage: {shareholder.get('percentage', 'Unknown')}%")
+                print(f"   Share Class: {shareholder.get('share_class', 'Unknown')}")
+                transfers = shareholder.get('transfers', [])
+                if transfers:
+                    print(f"   Transfers: {', '.join([f'{t.get('amount', 0)} shares on {t.get('date', 'unknown')}' for t in transfers])}")
+                else:
+                    print("   Transfers: None")
+        else:
+            print("No shareholder information found")
+
+    except Exception as e:
+        print(f"Error in shareholder extraction: {e}")
+
+def test_company_filings():
+    """Test function to check what filings a company has"""
+    from resolver import get_company_filing_history
+
+    company_number = '16386380'
+    result = get_company_filing_history(company_number)
+
+    print(f"Company: {company_number}")
+    print(f"Total filings: {len(result.get('filing_history', {}).get('items', []))}")
+
+    items = result.get('filing_history', {}).get('items', [])
+    for item in items[:20]:  # Show first 20 filings
+        print(f"  {item.get('type', 'Unknown')}: {item.get('date', 'Unknown')} - {item.get('description', 'No description')}")
+
+if __name__ == "__main__":
+    # test_shareholder_extraction()
+    test_company_filings()

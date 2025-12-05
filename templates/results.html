@@ -1,0 +1,90 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="referrer" content="no-referrer">
+  <title>Batch Results</title>
+  <style>
+    body { font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; }
+    table { border-collapse: collapse; width: 100%; margin-top: 12px; }
+    th, td { border: 1px solid #e5e7eb; padding: 8px; font-size: 14px; }
+    th { background: #f9fafb; text-align: left; }
+    .bar { margin: 16px 0; }
+    a.btn { display:inline-block; padding:6px 10px; border:1px solid #2563eb; border-radius:6px; text-decoration:none; color:#2563eb; }
+    a.btn:hover { background:#eff6ff; }
+  </style>
+</head>
+<body>
+  <h2>Batch Results</h2>
+
+  <p>Total {{ summary.total }} — Auto {{ summary.auto }} — Manual review {{ summary.manual }} — Errors {{ summary.errors }}</p>
+
+  <div class="bar">
+    <a class="btn" href="/download?path={{ res_path }}">Download resolutions CSV</a>
+    {% if cand_path %}<a class="btn" href="/download?path={{ cand_path }}">Download candidates CSV</a>{% endif %}
+    <a class="btn" href="/download?path={{ jsonl_path }}">Download JSONL</a>
+    <a class="btn" href="/">← Back</a>
+  </div>
+
+  <form method="post" action="/enrich">
+    <input type="hidden" name="out_path" value="{{ out_path }}"/>
+
+    <table>
+      <thead>
+        <tr>
+          <th>Input</th>
+          <th>Status</th>
+          <th>Match / Candidates</th>
+          <th>Company No.</th>
+          <th>Confidence</th>
+          <th>Action</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in results %}
+          <tr>
+            <td>{{ r.input_name }}</td>
+            <td>{{ r.status }}</td>
+            <td>
+              {% if r.status == 'auto' %}
+                <label>
+                  <input type="checkbox" name="enrich_item" value="{{ r.company_number }}|{{ r.input_name }}" checked/>
+                  {{ r.entity_name }} ({{ r.company_number }})
+                  {% if r.company_number %}
+                    <a href="/go/ch/{{ r.company_number }}" target="_blank" rel="noopener" referrerpolicy="no-referrer">open</a>
+                  {% endif %}
+                </label>
+              {% else %}
+                {% for c in candidates if c.input_name == r.input_name %}
+                  <div>
+                    <label>
+                      <input type="radio" name="choice_{{ loop.index0 }}" value="{{ c.candidate_company_number }}|{{ r.input_name }}">
+                      {{ c.candidate_entity_name }} ({{ c.candidate_company_number or '—' }}) — {{ c.candidate_status or 'status n/a' }}
+                    </label>
+                    {% if c.candidate_company_number %}
+                      <a href="/go/ch/{{ c.candidate_company_number }}" target="_blank" rel="noopener" referrerpolicy="no-referrer">open</a>
+                    {% endif %}
+                  </div>
+                {% endfor %}
+              {% endif %}
+            </td>
+            <td>{{ r.company_number or '' }}</td>
+            <td>{{ r.confidence or '' }}</td>
+            <td>
+              {% if r.status == 'auto' %}
+                Auto matched & will be enriched
+              {% else %}
+                Select a candidate above, then submit
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <p style="margin-top:16px;">
+      <button type="submit">Confirm & Enrich</button>
+    </p>
+  </form>
+</body>
+</html>

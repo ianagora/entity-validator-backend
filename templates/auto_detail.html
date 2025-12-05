@@ -1,0 +1,447 @@
+{% extends "base.html" %}
+{% block title %}Auto Result – {{ item.entity_name or item.input_name }}{% endblock %}
+{% block page_title %}Auto Result{% endblock %}
+
+{% macro render_addr(a) -%}
+  {%- if a is mapping -%}
+    {%- set parts = [] -%}
+    {%- if a.address_line_1 or a.addressLine1 %}{% set _ = parts.append(a.address_line_1 or a.addressLine1) %}{% endif -%}
+    {%- if a.address_line_2 or a.addressLine2 %}{% set _ = parts.append(a.address_line_2 or a.addressLine2) %}{% endif -%}
+    {%- if a.premises %}{% set _ = parts.append(a.premises) %}{% endif -%}
+    {%- if a.locality or a.town %}{% set _ = parts.append(a.locality or a.town) %}{% endif -%}
+    {%- if a.region %}{% set _ = parts.append(a.region) %}{% endif -%}
+    {%- if a.postal_code or a.postcode %}{% set _ = parts.append(a.postal_code or a.postcode) %}{% endif -%}
+    {%- if a.country %}{% set _ = parts.append(a.country) %}{% endif -%}
+    {{ parts|reject('equalto','')|list|join(', ') }}
+  {%- else -%}
+    {{ a }}
+  {%- endif -%}
+{%- endmacro %}
+
+{% block content %}
+
+{# registry flags provided by app.py #}
+{% set reg = registry or '' %}
+{% set is_ch = is_ch %}
+{% set is_ccew = is_cc %}
+
+<div style="display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:12px;">
+  <a href="/queue/auto" class="btn" style="padding:6px 10px;">
+    <i class="fa-solid fa-arrow-left"></i> Back to Auto Queue
+  </a>
+
+  {% if is_ch and ref_no %}
+    <a class="btn" style="padding:6px 10px;" href="/go/ch/{{ ref_no }}" target="_blank" rel="noopener">
+      Open on Companies House
+    </a>
+  {% elif is_ccew and source_profile_url %}
+    <a class="btn" style="padding:6px 10px;" href="{{ source_profile_url }}" target="_blank" rel="noopener">
+      Open on Charity Commission
+    </a>
+  {% elif source_profile_url %}
+    <a class="btn" style="padding:6px 10px;" href="{{ source_profile_url }}" target="_blank" rel="noopener">
+      Open Source
+    </a>
+  {% endif %}
+
+  <a class="btn" style="padding:6px 10px;" href="/auto/{{ item.id }}/compare">
+    <i class="fa-solid fa-table-columns"></i> Compare fields
+  </a>
+
+  {% if item.enrich_json_path %}
+    <a class="btn" style="padding:6px 10px;" href="/download?path={{ item.enrich_json_path }}">
+      <i class="fa-regular fa-file-code"></i> Download JSON
+    </a>
+  {% endif %}
+  {% if item.enrich_xlsx_path %}
+    <a class="btn" style="padding:6px 10px;" href="/download?path={{ item.enrich_xlsx_path }}">
+      <i class="fa-regular fa-file-excel"></i> Download XLSX
+    </a>
+  {% endif %}
+</div>
+
+<div class="card">
+  <div class="card-title">Summary</div>
+  <table>
+    <tbody>
+      <tr><th style="width:240px;">Input</th><td>{{ item.input_name }}</td></tr>
+      <tr><th>Matched Name</th><td>{{ item.entity_name or '-' }}</td></tr>
+      <tr><th>Reference / Number</th><td>{{ ref_no or '-' }}</td></tr>
+      <tr>
+        <th>Registry</th>
+        <td>
+          {% if is_ch %}
+            <span class="badge" style="background:#eef2ff;border:1px solid #c7d2fe;color:#3730a3;">Companies House</span>
+          {% elif is_ccew %}
+            <span class="badge" style="background:#ecfeff;border:1px solid #a5f3fc;color:#155e75;">Charity Commission</span>
+          {% else %}
+            <span class="badge">Unknown</span>
+          {% endif %}
+        </td>
+      </tr>
+      <tr><th>Confidence</th><td>{{ item.confidence is not none and ('%.3f'|format(item.confidence)) or '-' }}</td></tr>
+      <tr><th>Pipeline Status</th><td>{{ item.pipeline_status }}</td></tr>
+      <tr><th>Enrich Status</th>
+        <td>
+          {% if enrich_status == 'done' %}
+            <span class="badge" style="background:#ecfdf5;border:1px solid #a7f3d0;color:#065f46;">done</span>
+          {% elif enrich_status == 'running' %}
+            <span class="badge" style="background:#fff7ed;border:1px solid #fed7aa;color:#9a3412;">running</span>
+          {% elif enrich_status == 'queued' or enrich_status == 'pending' %}
+            <span class="badge" style="background:#eff6ff;border:1px solid #bfdbfe;color:#1e40af;">{{ enrich_status }}</span>
+          {% elif enrich_status == 'failed' %}
+            <span class="badge" style="background:#fef2f2;border:1px solid #fecaca;color:#991b1b;">failed</span>
+          {% else %}
+            {{ enrich_status or '-' }}
+          {% endif %}
+        </td>
+      </tr>
+      <tr><th>Run At</th><td>{{ item.created_at }}</td></tr>
+    </tbody>
+  </table>
+</div>
+
+{# ---------------- Charity Commission (trustees + filings) ---------------- #}
+{% if is_ccew %}
+  {% set profile = bundle.get('profile') or {} %}
+  {% set trustees = bundle.get('trustees') or [] %}
+  {% set filings  = bundle.get('filings')  or [] %}
+
+  <div class="card" style="margin-top:12px;">
+    <div class="card-title">Charity Profile</div>
+    <table>
+      <tbody>
+        <tr><th style="width:240px;">Charity Name</th><td>{{ profile.get('name') or item.entity_name or item.input_name }}</td></tr>
+        <tr><th>Charity Number</th><td>{{ profile.get('charity_number') or ref_no or '-' }}</td></tr>
+        <tr><th>Status</th><td>{{ profile.get('status') or '-' }}</td></tr>
+        <tr><th>Postcode</th><td>{{ profile.get('postcode') or '-' }}</td></tr>
+        <tr><th>Address</th><td>{{ render_addr(profile.get('address')) }}</td></tr>
+        <tr>
+          <th>Source</th>
+          <td>
+            {% if source_profile_url %}
+              <a href="{{ source_profile_url }}" target="_blank" rel="noopener">Open on Charity Commission</a>
+            {% else %}-{% endif %}
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="grid-2" style="margin-top:12px;">
+    <div class="card">
+      <div class="card-title">Trustees</div>
+      {% if trustees %}
+        <ul style="margin:0;padding-left:16px;">
+          {% for t in trustees %}
+            <li>{{ t.name or t.get('name') or t.get('displayName') }}</li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p style="color:#64748b;">No trustees returned.</p>
+      {% endif %}
+    </div>
+
+    <div class="card">
+      <div class="card-title">Filings / Documents</div>
+      {% if filings %}
+        <ul style="margin:0;padding-left:16px;">
+          {% for f in filings %}
+            <li>
+              {{ f.title or f.get('title') or 'Document' }}
+              {% if f.url or f.get('url') %}
+                – <a href="{{ f.url or f.get('url') }}" target="_blank" rel="noopener">Open</a>
+              {% endif %}
+              <span style="color:#64748b;">({{ f.date or f.get('date') or '-' }})</span>
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p style="color:#64748b;">No filings returned.</p>
+      {% endif %}
+    </div>
+  </div>
+{% endif %}
+
+{# ---------------- Companies House (profile + sources + officers/pscs/charges) ---------------- #}
+{% if is_ch %}
+  {% set profile = bundle.get('profile') or {} %}
+  {% set officers = (bundle.get('officers') or {}).get('items') or [] %}
+  {% set pscs     = (bundle.get('pscs')     or {}).get('items') or [] %}
+  {% set charges  = (bundle.get('charges')  or {}).get('items') or [] %}
+  {% set sources  = bundle.get('sources') or {} %}
+  {% set regular_shareholders = bundle.get('regular_shareholders') or [] %}
+  {% set parent_shareholders = bundle.get('parent_shareholders') or [] %}
+  {% set total_shares = bundle.get('total_shares') or 0 %}
+  {% set shareholders_status = bundle.get('shareholders_status') %}
+
+  <div class="grid-2" style="margin-top:12px;">
+    <div class="card">
+      <div class="card-title">Company Profile</div>
+      <table>
+        <tbody>
+          <tr>
+            <th style="width:240px;">Company Name</th>
+            <td>{{ profile.get('company_name') or item.entity_name or item.input_name }}</td>
+          </tr>
+          <tr><th>Company Number</th><td>{{ profile.get('company_number') or ref_no }}</td></tr>
+          <tr><th>Status</th><td>{{ profile.get('company_status') or '-' }}</td></tr>
+          <tr><th>Date of Incorporation</th><td>{{ profile.get('date_of_creation') or '-' }}</td></tr>
+          <tr><th>Registered Office</th><td>{{ render_addr(profile.get('registered_office_address')) }}</td></tr>
+          <tr><th>SIC Codes</th>
+            <td>
+              {% set sic = profile.get('sic_codes') %}
+              {% if sic is sequence and sic is not string %}{{ sic|join(', ') }}{% else %}{{ sic or '-' }}{% endif %}
+            </td>
+          </tr>
+          <tr>
+            <th>Source</th>
+            <td>
+              {% if ref_no %}
+                <a href="/go/ch/{{ ref_no }}" target="_blank" rel="noopener">Open on Companies House</a>
+              {% else %}-{% endif %}
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Sources</div>
+      {% if sources %}
+        <ul style="margin:0;padding-left:16px;">
+          {% for key, url in sources.items() %}
+            <li><code>{{ key }}</code>: <a href="{{ url }}" target="_blank" rel="noopener">{{ url }}</a></li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <p style="color:#64748b;">No source links captured.</p>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Officers (first 50)</div>
+    {% if officers|length == 0 %}
+      <p style="color:#64748b;">No officer records returned.</p>
+    {% else %}
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Role</th>
+            <th>Appointed On</th>
+            <th>Nationality</th>
+            <th>Address</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for o in officers[:50] %}
+            <tr>
+              <td>{{ o.get('name') or '-' }}</td>
+              <td>{{ o.get('officer_role') or '-' }}</td>
+              <td>{{ o.get('appointed_on') or '-' }}</td>
+              <td>{{ o.get('nationality') or '-' }}</td>
+              <td>{{ render_addr(o.get('address')) }}</td>
+              <td>{{ o.get('resigned_on') and ('Resigned ' ~ o.get('resigned_on')) or 'Active' }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% if officers|length > 50 %}
+        <p style="color:#64748b;">Showing first 50 of {{ officers|length }} officer entries… download for the full list.</p>
+      {% endif %}
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <div class="card-title">Persons with Significant Control (first 50)</div>
+    {% if pscs|length == 0 %}
+      <p style="color:#64748b;">No PSCs returned.</p>
+    {% else %}
+      <table>
+        <thead>
+          <tr>
+            <th>Kind</th>
+            <th>Name</th>
+            <th>Notified On</th>
+            <th>Ceased On</th>
+            <th>Nature of Control</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for p in pscs[:50] %}
+            <tr>
+              <td>{{ p.get('kind') or '-' }}</td>
+              <td>
+                {% if p.get('name_elements') is mapping %}
+                  {{ p.name_elements.forename or '' }} {{ p.name_elements.surname or '' }}
+                {% else %}
+                  {{ p.get('name') or '-' }}
+                {% endif %}
+              </td>
+              <td>{{ p.get('notified_on') or '-' }}</td>
+              <td>{{ p.get('ceased_on') or '-' }}</td>
+              <td>
+                {% set noc = p.get('natures_of_control') %}
+                {% if noc is sequence and noc is not string %}{{ noc|join(', ') }}{% else %}{{ noc or '-' }}{% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% if pscs|length > 50 %}
+        <p style="color:#64748b;">Showing first 50 of {{ pscs|length }} PSC entries… download for the full list.</p>
+      {% endif %}
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <div class="card-title">Charges (first 50)</div>
+    {% if charges|length == 0 %}
+      <p style="color:#64748b;">No charges returned.</p>
+    {% else %}
+      <table>
+        <thead>
+          <tr>
+            <th>Created On</th>
+            <th>Status</th>
+            <th>Persons Entitled</th>
+            <th>Assets</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for ch in charges[:50] %}
+            {% set entitled = ch.get('persons_entitled') %}
+            {% set assets = ch.get('assets_ceased_released') or ch.get('assets_enforcement') or '' %}
+            <tr>
+              <td>{{ ch.get('created_on') or '-' }}</td>
+              <td>{{ ch.get('status') or '-' }}</td>
+              <td>
+                {% if entitled is sequence and entitled is not string %}
+                  {{ entitled|map(attribute='name')|list|join(', ') }}
+                {% else %}
+                  {{ entitled or '-' }}
+                {% endif %}
+              </td>
+              <td>
+                {% if assets is mapping %}
+                  {{ assets|tojson }}
+                {% else %}
+                  {{ assets or '-' }}
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% if charges|length > 50 %}
+        <p style="color:#64748b;">Showing first 50 of {{ charges|length }} charge entries… download for the full list.</p>
+      {% endif %}
+    {% endif %}
+  </div>
+
+  {% if regular_shareholders or parent_shareholders %}
+    <div class="card">
+      <div class="card-title">Shareholders
+        {% if total_shares > 0 %}
+          <span style="font-size:14px;font-weight:normal;color:#64748b;">(Total shares: {{ total_shares }})</span>
+        {% endif %}
+      </div>
+
+      {% if regular_shareholders %}
+        <h4 style="margin:16px 0 8px 0;color:#374151;">Individual Shareholders</h4>
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Shares Held</th>
+              <th>Percentage</th>
+              <th>Share Class</th>
+              <th>Transfers</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for shareholder in regular_shareholders %}
+              <tr>
+                <td>{{ shareholder.get('name', '-') }}</td>
+                <td>{{ shareholder.get('shares_held', '-') }}</td>
+                <td>{{ shareholder.get('percentage', 0) }}%</td>
+                <td>{{ shareholder.get('share_class', '-') }}</td>
+                <td>
+                  {% set transfers = shareholder.get('transfers', []) %}
+                  {% if transfers %}
+                    {% for transfer in transfers %}
+                      {{ transfer.get('amount', 0) }} shares on {{ transfer.get('date', 'unknown') }}{% if not loop.last %}, {% endif %}
+                    {% endfor %}
+                  {% else %}
+                    None
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% endif %}
+
+      {% if parent_shareholders %}
+        <h4 style="margin:24px 0 8px 0;color:#374151;">Parent Company Shareholders</h4>
+        <table>
+          <thead>
+            <tr>
+              <th>Company Name</th>
+              <th>Shares Held</th>
+              <th>Percentage</th>
+              <th>Share Class</th>
+              <th>Transfers</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for shareholder in parent_shareholders %}
+              <tr>
+                <td><strong>{{ shareholder.get('name', '-') }}</strong></td>
+                <td>{{ shareholder.get('shares_held', '-') }}</td>
+                <td>{{ shareholder.get('percentage', 0) }}%</td>
+                <td>{{ shareholder.get('share_class', '-') }}</td>
+                <td>
+                  {% set transfers = shareholder.get('transfers', []) %}
+                  {% if transfers %}
+                    {% for transfer in transfers %}
+                      {{ transfer.get('amount', 0) }} shares on {{ transfer.get('date', 'unknown') }}{% if not loop.last %}, {% endif %}
+                    {% endfor %}
+                  {% else %}
+                    None
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% endif %}
+    </div>
+  {% else %}
+      {% if shareholders_status %}
+        {% if shareholders_status == 'found' %}
+          <p style="color:#64748b;">Shareholder information extracted successfully.</p>
+        {% elif shareholders_status == 'cs01_found_no_shareholders' %}
+          <p style="color:#64748b;">CS01 filing found but contains no shareholder information.</p>
+        {% elif shareholders_status == 'cs01_not_found_ar01_no_shareholders' %}
+          <p style="color:#64748b;">CS01 filing not found. AR01 filing found but contains no shareholder information.</p>
+        {% elif shareholders_status == 'no_cs01_or_ar01_filings' %}
+          <p style="color:#64748b;">No CS01 or AR01 filings found in company records.</p>
+        {% elif shareholders_status == 'extraction_error' %}
+          <p style="color:#dc2626;">Error occurred during shareholder extraction.</p>
+        {% else %}
+          <p style="color:#64748b;">Shareholder extraction status: {{ shareholders_status }}</p>
+        {% endif %}
+      {% else %}
+        <p style="color:#64748b;">No shareholder information available.</p>
+      {% endif %}
+    {% endif %}
+  </div>
+
+
+{% endif %}
+
+{% endblock %}

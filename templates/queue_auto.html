@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}Enriched – Scrutinise{% endblock %}
+{% block page_title %}Enriched{% endblock %}
+
+{% block content %}
+{% if rows|length == 0 %}
+  <p style="color:#64748b;">No enriched items yet.</p>
+{% else %}
+  <style>
+    .btn.small {
+      padding: 5px 10px;
+      font-size: 13px;
+      border-radius: 6px;
+    }
+    td.actions {
+      white-space: nowrap;
+      text-align: right;
+    }
+  </style>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Created</th>
+        <th>Input Name</th>
+        <th>Entity</th>
+        <th>Registry</th>
+        <th>Company #</th>
+        <th>Enrichment</th>
+        <th>Open</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for r in rows %}
+      <tr>
+        <!-- Format ISO string to dd-mm-yyyy safely -->
+        <td style="white-space:nowrap;">
+          {% set iso = (r.created_at or '') %}
+          {% set d = iso[:10] %} {# 'YYYY-MM-DD' or '' #}
+          {{ d and (d[8:10] ~ '-' ~ d[5:7] ~ '-' ~ d[0:4]) or '' }}
+        </td>
+        <td>{{ r.input_name }}</td>
+        <td>{{ r.entity_name }}</td>
+        <td>
+          {% set reg = r.resolved_registry %}
+          {% if reg %}
+            <span class="badge info" title="{{ reg }}">{{ reg }}</span>
+          {% else %}
+            <span class="badge" title="Registry not recorded">—</span>
+          {% endif %}
+        </td>
+        <td>{{ r.company_number }}</td>
+        <td>
+          {% if r.enrich_status == 'done' %}
+            <span class="badge success">done</span>
+          {% elif r.enrich_status == 'running' %}
+            <span class="badge warn">running</span>
+          {% elif r.enrich_status == 'failed' %}
+            <span class="badge error">failed</span>
+          {% else %}
+            <span class="badge">pending</span>
+          {% endif %}
+        </td>
+        <td class="actions">
+          <a class="btn primary small" href="/auto/{{ r.id }}">View</a>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+{% endif %}
+{% endblock %}

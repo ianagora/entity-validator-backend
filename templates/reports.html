@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}Reporting – Scrutinise{% endblock %}
+{% block page_title %}Reporting{% endblock %}
+
+{% block content %}
+<style>
+  .grid { display:grid; grid-template-columns: repeat(4, minmax(180px,1fr)); gap:14px; }
+  .kpi { background:#fff; border:1px solid var(--border); border-radius:12px; padding:14px; }
+  .kpi .label { color:#64748b; font-size:12px; text-transform:uppercase; letter-spacing:.06em; }
+  .kpi .value { font-size:24px; font-weight:800; margin-top:6px; }
+  .panel { background:#fff; border:1px solid var(--border); border-radius:14px; padding:16px; margin-top:14px; }
+  .panel h4 { margin:0 0 10px 0; }
+  .btn.small { padding:6px 10px; border-radius:6px; font-size:13px; }
+  .muted { color:#64748b; font-size:13px; }
+</style>
+
+<div class="grid">
+  <div class="kpi"><div class="label">Batches Uploaded</div><div class="value">{{ metrics.batches }}</div></div>
+  <div class="kpi"><div class="label">Customer Records</div><div class="value">{{ metrics.total_records }}</div></div>
+  <div class="kpi"><div class="label">Auto (Enriched) on Upload</div><div class="value">{{ metrics.auto_on_upload }}</div></div>
+  <div class="kpi"><div class="label">Exceptions on Upload</div><div class="value">{{ metrics.manual_on_upload }}</div></div>
+
+  <div class="kpi"><div class="label">Moved to Enriched (Post-Review)</div><div class="value">{{ metrics.moved_to_auto_after_manual }}</div></div>
+  <div class="kpi"><div class="label">Unable to Match</div><div class="value">{{ metrics.unable_to_match }}</div></div>
+  <div class="kpi"><div class="label">Exceptions Pending Review</div><div class="value">{{ metrics.pending_manual }}</div></div>
+  <div class="kpi"><div class="label">Potential Screening Risks</div><div class="value">{{ metrics.potential_screening_risks }}</div></div>
+</div>
+
+<div class="panel">
+  <h4>Data Quality Summary</h4>
+  <div class="muted">Counts are based on currently enriched records with a completed compare.</div>
+  <div style="display:grid; grid-template-columns: 1fr 1fr; gap:16px; margin-top:10px;">
+    <div>
+      <canvas id="barChart" height="180"></canvas>
+    </div>
+    <div>
+      <canvas id="pieChart" height="180"></canvas>
+    </div>
+  </div>
+</div>
+
+<div class="panel" style="display:flex;align-items:center;justify-content:space-between;">
+  <div>
+    <h4 style="margin:0;">Issues Export</h4>
+    <div class="muted">Download a consolidated CSV of any records that contain a mismatch or enrichment.</div>
+  </div>
+  <div>
+    <a class="btn primary small" href="/reports/export?kind=issues">
+      <i class="fa-solid fa-file-csv"></i> Download CSV
+    </a>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1"></script>
+<script>
+  const dataQuality = {{ charts.data_quality | tojson }};
+  const outcomeSplit = {{ charts.outcome_split | tojson }};
+
+  // Bar: mismatch vs enriched (record-level counts)
+  new Chart(document.getElementById('barChart'), {
+    type: 'bar',
+    data: {
+      labels: ['Mismatch', 'Enriched'],
+      datasets: [{
+        label: 'Records',
+        data: [dataQuality.mismatch_records, dataQuality.enriched_records]
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins:{ legend:{ display:false } },
+      scales: { y: { beginAtZero: true, ticks: { precision:0 } } }
+    }
+  });
+
+  // Pie: Overall outcomes from upload (auto vs manual)
+  new Chart(document.getElementById('pieChart'), {
+    type: 'pie',
+    data: {
+      labels: ['Auto on upload', 'Exceptions on upload'],
+      datasets: [{ data: [outcomeSplit.auto_on_upload, outcomeSplit.manual_on_upload] }]
+    },
+    options: { responsive: true }
+  });
+</script>
+{% endblock %}
