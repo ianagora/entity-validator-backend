@@ -1,5 +1,5 @@
 [phases.setup]
-nixPkgs = ["...", "tesseract", "poppler_utils"]
+aptPkgs = ["tesseract-ocr", "tesseract-ocr-eng", "poppler-utils"]
 
 [phases.install]
-cmds = ["pip install pytesseract pdf2image pillow"]
+cmds = ["pip install -r requirements.txt"]
