@@ -441,7 +441,8 @@ def test_shareholder_extraction():
                 print(f"   Share Class: {shareholder.get('share_class', 'Unknown')}")
                 transfers = shareholder.get('transfers', [])
                 if transfers:
-                    print(f"   Transfers: {', '.join([f'{t.get('amount', 0)} shares on {t.get('date', 'unknown')}' for t in transfers])}")
+                    transfer_strs = [f"{t.get('amount', 0)} shares on {t.get('date', 'unknown')}" for t in transfers]
+                    print(f"   Transfers: {', '.join(transfer_strs)}")
                 else:
                     print("   Transfers: None")
         else:
