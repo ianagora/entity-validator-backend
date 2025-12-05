@@ -77,6 +77,8 @@ def extract_shareholder_info_with_openai(pdf_path):
         return []
     
     print(f"   Using extraction method: {extraction_method}")
+    print(f"   DEBUG: Extracted text preview (first 500 chars):\n{full_text[:500]}\n")
+    print(f"   DEBUG: Extracted text preview (last 500 chars):\n{full_text[-500:]}\n")
 
     # Initialize OpenAI client
     try:
@@ -143,7 +145,16 @@ Text from PDF:
         # Parse the JSON
         result = json.loads(result_text)
         print(f"   Raw JSON response: {json.dumps(result, indent=2)}")
-        return result.get("shareholders", [])
+        
+        shareholders_found = result.get("shareholders", [])
+        if not shareholders_found:
+            print(f"   ⚠️ WARNING: OpenAI returned empty shareholders list despite {len(full_text)} chars of text")
+            print(f"   This usually means:")
+            print(f"     - CS01 filing has 'no updates' (no shareholder changes)")
+            print(f"     - Text quality is poor (check DEBUG output above)")
+            print(f"     - Shareholder info is in a different section or format")
+        
+        return shareholders_found
 
     except Exception as e:
         print(f"   Error extracting with OpenAI: {e}")
