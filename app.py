@@ -8,8 +8,6 @@ from fastapi.staticfiles import StaticFiles
 from fastapi import Query
 from fastapi.responses import StreamingResponse
 from typing import Optional, Union, List, Dict, Any, Tuple, Literal
-import signal
-from functools import wraps
 
 import pandas as pd
 import time
@@ -33,31 +31,6 @@ from resolver import get_company_filing_history, get_filing_detail, get_document
 from shareholder_information import extract_shareholders_for_company
 from shareholder_information import identify_parent_companies
 
-# ---------------- Timeout Mechanism ----------------
-class TimeoutException(Exception):
-    pass
-
-def timeout_handler(signum, frame):
-    raise TimeoutException("Function execution timed out")
-
-def timeout(seconds=300):
-    """Decorator to add timeout to a function (default 5 minutes)"""
-    def decorator(func):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            # Set the signal handler and alarm
-            old_handler = signal.signal(signal.SIGALRM, timeout_handler)
-            signal.alarm(seconds)
-            try:
-                result = func(*args, **kwargs)
-            finally:
-                # Cancel the alarm and restore the old handler
-                signal.alarm(0)
-                signal.signal(signal.SIGALRM, old_handler)
-            return result
-        return wrapper
-    return decorator
-
 # ---------------- App Setup ----------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -79,30 +52,16 @@ async def lifespan(app: FastAPI):
         """).fetchall()
 
     for r in rows:
-        reg   = r["resolved_registry"]
+        reg   = canonical_registry_name(r["resolved_registry"])
         comp  = (r["company_number"] or "").strip() or None
         chno  = (r["charity_number"] or "").strip() or None
 
-        if reg == "companies_house" and comp:
+        if reg == "Companies House" and comp:
             # Route to CH enrichment worker
-            from enrichment_worker import queue_ch_enrichment
-            queue_ch_enrichment(r["id"], comp)
-        elif reg == "charity_commission":
+            enqueue_enrich(r["id"])
+        elif reg == "Charity Commission":
             # Route to Charity enrichment worker
-            from enrichment_worker import queue_charity_enrichment
-            if not chno:
-                # Try to find charity_number from resolved data
-                try:
-                    with db() as conn2:
-                        cur2 = conn2.cursor()
-                        res_row = cur2.execute("SELECT resolved_data FROM items WHERE id=?", (r["id"],)).fetchone()
-                        if res_row and res_row["resolved_data"]:
-                            resolved = json.loads(res_row["resolved_data"])
-                            chno = resolved.get("company_number")  # might be charity_number
-                except Exception:
-                    pass
-            if chno:
-                queue_charity_enrichment(r["id"], chno)
+            enqueue_enrich_charity(r["id"])
 
     yield
 
@@ -1520,7 +1479,6 @@ def bundle_to_xlsx(bundle: dict, xlsx_path: str):
 # ---------------- Enrichment worker ----------------
 
 # ---------------- Companies House enrichment ----------------
-@timeout(seconds=600)  # 10 minute timeout for enrichment
 def enrich_one(item_id: int):
     """Fetch CH bundle, write artifacts, and update status with simple lock retries."""
     try:
@@ -1632,13 +1590,6 @@ def enrich_one(item_id: int):
                 (json_path, xlsx_path, shareholders_json, shareholders_status, item_id),
             )
 
-    except TimeoutException as e:
-        try:
-            with db() as conn:
-                conn.execute("UPDATE items SET enrich_status='failed' WHERE id=?", (item_id,))
-        except Exception:
-            pass
-        print(f"[enrich_one] TIMEOUT after 10 minutes for item {item_id}: {e}")
     except Exception as e:
         try:
             with db() as conn:
@@ -1749,7 +1700,6 @@ def _derive_linked_party_value(header: str, uploaded_map: dict, officers: list):
     return None
 
 # ---------------- Charity Commission enrichment (trustees etc.) ----------------
-@timeout(seconds=600)  # 10 minute timeout for enrichment
 def enrich_charity_one(item_id: int):
     try:
         with db() as conn:
@@ -1794,13 +1744,6 @@ def enrich_charity_one(item_id: int):
                 "UPDATE items SET enrich_status='done', enrich_json_path=?, enrich_xlsx_path=? WHERE id=?",
                 (json_path, xlsx_path, item_id),
             )
-    except TimeoutException as e:
-        try:
-            with db() as conn:
-                conn.execute("UPDATE items SET enrich_status='failed' WHERE id=?", (item_id,))
-        except Exception:
-            pass
-        print(f"[enrich_charity_one] TIMEOUT after 10 minutes for item {item_id}: {e}")
     except Exception as e:
         try:
             with db() as conn:
