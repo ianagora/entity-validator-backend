@@ -2060,6 +2060,221 @@ async def batch_upload(request: Request, file: UploadFile = File(...)):
 
     return RedirectResponse(url=f"/queue/manual?run_id={run_id}", status_code=303)
 
+# API endpoint for JSON response (for Cloudflare frontend)
+@app.post("/api/batch/upload")
+async def api_batch_upload(file: UploadFile = File(...)):
+    """JSON API endpoint for batch upload - used by Cloudflare frontend"""
+    suffix = os.path.splitext(file.filename)[-1].lower()
+    if suffix not in [".csv", ".xlsx", ".xls"]:
+        return JSONResponse(
+            content={"error": "Invalid file format. Please upload CSV, XLSX, or XLS file."},
+            status_code=400
+        )
+
+    # save upload to a temp file
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        contents = await file.read()
+        tmp.write(contents)
+        tmp_path = tmp.name
+
+    out_dir = ensure_out_dir()
+    run_id = None
+    try:
+        # create run
+        with db() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "INSERT INTO runs (created_at, upload_filename) VALUES (?,?)",
+                (datetime.utcnow().isoformat() + "Z", file.filename),
+            )
+            run_id = cur.lastrowid
+
+        # read uploaded file
+        df = read_inputs(tmp_path)
+
+        # build a set of existing name hashes for dedupe (across history)
+        with db() as conn:
+            existing = {
+                r["name_hash"]
+                for r in conn.execute(
+                    "SELECT name_hash FROM items WHERE name_hash IS NOT NULL"
+                ).fetchall()
+            }
+
+        seen_hashes = set(existing)
+
+        results_all: List[Dict[str, Any]] = []
+        for _, row in df.iterrows():
+            input_name = str(row.get("name") or "").strip()
+            if not input_name:
+                continue
+            nh = name_to_hash(input_name)
+            if nh in seen_hashes:
+                continue
+            seen_hashes.add(nh)
+
+            base, candidate_rows = safe_resolve(
+                input_name,
+                top_n=3,
+                hints={
+                    "entity_type": row.get("entity_type"),
+                    "postcode": row.get("postcode"),
+                    "incorporation_year": row.get("incorporation_year"),
+                },
+            )
+
+            # resolve registry (normalised) + derive charity_number if applicable
+            resolved_reg = canonical_registry_name(base.get("resolved_registry"))
+            charity_number = None
+            if resolved_reg == "Charity Commission":
+                charity_number = _extract_charity_number(base, candidate_rows)
+
+            # client convenience fields (unchanged)
+            client_ref = (row.get("client_ref") or None)
+            client_address = (row.get("client_address") or None)
+            client_city = (row.get("client_address_city") or None)
+            client_postcode = (row.get("client_address_postcode") or None)
+            client_country = (row.get("client_address_country") or None)
+            client_notes = (row.get("client_notes") or None)
+
+            lp_raw = row.get("client_linked_parties")
+            client_lp_json = None
+            if pd.notna(lp_raw) and str(lp_raw).strip():
+                txt = str(lp_raw).strip()
+                try:
+                    parsed = json.loads(txt)
+                    client_lp_json = json.dumps(parsed, ensure_ascii=False)
+                except Exception:
+                    parts = [p.strip() for p in txt.replace("\n", ";").split(";")]
+                    parts = [p for p in parts if p]
+                    client_lp_json = json.dumps(parts, ensure_ascii=False) if parts else None
+
+            results_all.append({
+                "base": base,
+                "candidates": candidate_rows,
+                "name_hash": nh,
+                "row": row,
+                "resolved_registry": resolved_reg,
+                "charity_number": charity_number,
+                "client": {
+                    "ref": client_ref,
+                    "address": client_address,
+                    "city": client_city,
+                    "postcode": client_postcode,
+                    "country": client_country,
+                    "linked_parties_json": client_lp_json,
+                    "notes": client_notes,
+                },
+            })
+
+        # ---- persist (explicit transaction for speed) ----
+        to_enqueue_ch: List[int] = []
+        to_enqueue_cc: List[int] = []
+
+        with db() as conn:
+            cur = conn.cursor()
+            cur.execute("BEGIN")
+            try:
+                for pack in results_all:
+                    base = pack["base"]
+                    candidate_rows = pack["candidates"]
+                    pipeline_status = base.get("status") or "error"
+                    candidates_json = json.dumps(candidate_rows, ensure_ascii=False) if candidate_rows else None
+
+                    # exact client-upload schema (526)
+                    schema_fields = extract_all_schema_fields_from_row(pack["row"])
+                    schema_cols_sql = ",".join(_q_ident(h) for h in ALL_SCHEMA_FIELDS)
+                    schema_vals_tuple = tuple(schema_fields[h] for h in ALL_SCHEMA_FIELDS)
+
+                    # core columns now include charity_number + resolved_registry
+                    core_columns = (
+                        "run_id,input_name,name_hash,pipeline_status,match_type,"
+                        "entity_name,company_number,company_status,charity_number,resolved_registry,"
+                        "confidence,reason,search_url,source_url,retrieved_at,"
+                        "candidates_json,out_dir,created_at,"
+                        "client_ref,client_address,client_address_city,"
+                        "client_address_postcode,client_address_country,"
+                        "client_linked_parties,client_notes"
+                    )
+
+                    core_values = (
+                        run_id, base.get("input_name"), pack["name_hash"], pipeline_status,
+                        base.get("match_type"), base.get("entity_name"),
+                        base.get("company_number"), base.get("company_status"),
+                        (pack["charity_number"] or None), pack["resolved_registry"],
+                        base.get("confidence"), base.get("reason"),
+                        base.get("search_url"), base.get("source_url"),
+                        base.get("retrieved_at"),
+                        candidates_json, out_dir, datetime.utcnow().isoformat() + "Z",
+                        pack["client"]["ref"], pack["client"]["address"],
+                        pack["client"]["city"], pack["client"]["postcode"],
+                        pack["client"]["country"], pack["client"]["linked_parties_json"],
+                        pack["client"]["notes"],
+                    )
+
+                    columns_sql = f"{core_columns},{schema_cols_sql}"
+                    values_tuple = core_values + schema_vals_tuple
+                    placeholders = ",".join(["?"] * len(values_tuple))
+
+                    cur.execute(
+                        f"INSERT INTO items ({columns_sql}) VALUES ({placeholders})",
+                        values_tuple,
+                    )
+                    item_id = cur.lastrowid
+
+                    # queue enrichment for either registry
+                    if pipeline_status == "auto":
+                        if base.get("company_number"):
+                            cur.execute("UPDATE items SET enrich_status='queued' WHERE id=?", (item_id,))
+                            to_enqueue_ch.append(item_id)
+                        elif (pack["resolved_registry"] == "Charity Commission") and pack["charity_number"]:
+                            cur.execute("UPDATE items SET enrich_status='queued' WHERE id=?", (item_id,))
+                            to_enqueue_cc.append(item_id)
+                        else:
+                            cur.execute("UPDATE items SET enrich_status='skipped' WHERE id=?", (item_id,))
+
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+            # commit by context manager
+
+        # fire workers after commit
+        for iid in to_enqueue_ch:
+            enqueue_enrich(iid)
+        for iid in to_enqueue_cc:
+            enqueue_enrich_charity(iid)
+
+        # Get stats for response
+        with db() as conn:
+            stats = conn.execute("""
+                SELECT 
+                    COUNT(*) as total,
+                    SUM(CASE WHEN pipeline_status='auto' THEN 1 ELSE 0 END) as auto_matched,
+                    SUM(CASE WHEN pipeline_status='manual' THEN 1 ELSE 0 END) as manual_review
+                FROM items WHERE run_id=?
+            """, (run_id,)).fetchone()
+
+        return JSONResponse(content={
+            "success": True,
+            "run_id": run_id,
+            "filename": file.filename,
+            "total_entities": stats["total"],
+            "auto_matched": stats["auto_matched"],
+            "manual_review": stats["manual_review"],
+            "message": f"Successfully processed {stats['total']} entities"
+        })
+
+    except Exception as e:
+        return JSONResponse(
+            content={"error": f"Upload processing failed: {str(e)}"},
+            status_code=500
+        )
+    finally:
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+
 @app.get("/auto/{item_id}/compare", response_class=HTMLResponse)
 def auto_compare(request: Request, item_id: int):
     # ---------- load the item ----------
