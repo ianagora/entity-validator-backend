@@ -1589,9 +1589,13 @@ def enrich_one(item_id: int):
             json.dump(bundle, f, ensure_ascii=False, indent=2)
         bundle_to_xlsx(bundle, xlsx_path)
 
-        # Serialize shareholders data for database storage
-        all_shareholders = bundle.get("regular_shareholders", []) + bundle.get("parent_shareholders", [])
-        shareholders_json = json.dumps(all_shareholders, ensure_ascii=False)
+        # Serialize shareholders data for database storage (preserve structure)
+        shareholders_data = {
+            "regular_shareholders": bundle.get("regular_shareholders", []),
+            "parent_shareholders": bundle.get("parent_shareholders", []),
+            "total_shares": bundle.get("total_shares", 0)
+        }
+        shareholders_json = json.dumps(shareholders_data, ensure_ascii=False)
         shareholders_status = bundle.get("shareholders_status", "")
 
         with db() as conn:
