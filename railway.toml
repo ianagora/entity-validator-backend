@@ -1,0 +1,4 @@
+[build]
+
+[deploy]
+startCommand = "python railway_start.py"
