@@ -1623,11 +1623,17 @@ def enrich_one(item_id: int):
                 try:
                     print(f"[enrich_one] Building corporate ownership tree...")
                     company_name = bundle.get("profile", {}).get("company_name", "Unknown")
+                    
+                    # Combine regular and parent shareholders for tree building
+                    all_shareholders = bundle.get("regular_shareholders", []) + bundle.get("parent_shareholders", [])
+                    
                     ownership_tree = build_ownership_tree(
                         company_number, 
                         company_name,
                         depth=0,
-                        max_depth=3  # Limit to 3 layers deep (prevents excessive API calls)
+                        max_depth=3,  # Limit to 3 layers deep (prevents excessive API calls)
+                        visited=None,
+                        initial_shareholders=all_shareholders  # Pass PSC or filing-extracted shareholders
                     )
                     bundle["ownership_tree"] = ownership_tree
                     

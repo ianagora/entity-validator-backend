@@ -96,7 +96,8 @@ def build_ownership_tree(
     company_name: str,
     depth: int = 0, 
     max_depth: int = 3,
-    visited: Optional[set] = None
+    visited: Optional[set] = None,
+    initial_shareholders: Optional[List[Dict[str, Any]]] = None
 ) -> Dict[str, Any]:
     """
     Recursively build corporate ownership tree
@@ -107,6 +108,7 @@ def build_ownership_tree(
         depth: Current depth in tree (0 = root)
         max_depth: Maximum depth to recurse (prevent infinite loops)
         visited: Set of already visited company numbers (prevent circular references)
+        initial_shareholders: Pre-extracted shareholders for root company (avoids re-extraction)
     
     Returns:
         Dictionary with company info and nested shareholder tree
@@ -141,14 +143,20 @@ def build_ownership_tree(
     print(f"{indent}🏢 Processing: {company_name} ({company_number}) [Depth: {depth}]")
     print(f"{indent}{'='*60}")
     
-    # Extract shareholders for this company
+    # Extract shareholders for this company (or use pre-extracted for root)
     try:
-        shareholder_result = extract_shareholders_for_company(company_number)
-        regular_shareholders = shareholder_result.get('regular_shareholders', [])
-        parent_shareholders = shareholder_result.get('parent_shareholders', [])
-        all_shareholders = regular_shareholders + parent_shareholders
-        
-        extraction_status = shareholder_result.get('extraction_status', 'unknown')
+        if depth == 0 and initial_shareholders is not None:
+            # Use pre-extracted shareholders for root company (from PSC or filings)
+            all_shareholders = initial_shareholders
+            extraction_status = 'pre-extracted'
+            print(f"{indent}📊 Using pre-extracted shareholders (from PSC or filings)")
+        else:
+            # Extract shareholders normally for child companies
+            shareholder_result = extract_shareholders_for_company(company_number)
+            regular_shareholders = shareholder_result.get('regular_shareholders', [])
+            parent_shareholders = shareholder_result.get('parent_shareholders', [])
+            all_shareholders = regular_shareholders + parent_shareholders
+            extraction_status = shareholder_result.get('extraction_status', 'unknown')
         
         print(f"{indent}📊 Extraction status: {extraction_status}")
         print(f"{indent}👥 Total shareholders: {len(all_shareholders)}")
