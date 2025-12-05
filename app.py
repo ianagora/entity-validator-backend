@@ -1563,6 +1563,59 @@ def enrich_one(item_id: int):
             shareholders_status = shareholder_result
             print(f"[enrich_one] Shareholder extraction status: {shareholder_result.get('extraction_status')}")
             total_extracted = len(shareholder_result.get("regular_shareholders", [])) + len(shareholder_result.get("parent_shareholders", []))
+            
+            # If no shareholders found in filings, try PSC data as fallback
+            if total_extracted == 0:
+                print(f"[enrich_one] No shareholders in filings, checking PSC register...")
+                try:
+                    psc_data = bundle.get("pscs", {})
+                    if psc_data and psc_data.get("items"):
+                        print(f"[enrich_one] Found {len(psc_data['items'])} PSCs, converting to shareholders...")
+                        psc_shareholders = []
+                        
+                        for psc in psc_data['items']:
+                            psc_name = psc.get("name", "Unknown")
+                            psc_kind = psc.get("kind", "")
+                            natures = psc.get("natures_of_control", [])
+                            
+                            # Determine if it's a company or individual
+                            is_company = "corporate" in psc_kind or "legal" in psc_kind
+                            
+                            # Try to determine ownership percentage from natures
+                            percentage = 0
+                            if any("75-to-100" in n for n in natures):
+                                percentage = 87.5  # Approximate
+                            elif any("50-to-75" in n for n in natures):
+                                percentage = 62.5
+                            elif any("25-to-50" in n for n in natures):
+                                percentage = 37.5
+                            else:
+                                percentage = 100  # Assume 100% if unclear
+                            
+                            shareholder = {
+                                "name": psc_name,
+                                "shares_held": "Unknown (from PSC)",
+                                "percentage": percentage,
+                                "share_class": "Ordinary",
+                                "source": "PSC Register"
+                            }
+                            
+                            psc_shareholders.append(shareholder)
+                        
+                        # Separate into regular and parent companies
+                        from shareholder_information import identify_parent_companies
+                        regular, parent = identify_parent_companies(psc_shareholders)
+                        
+                        bundle["regular_shareholders"] = regular
+                        bundle["parent_shareholders"] = parent
+                        bundle["shareholders_status"] = "found_via_psc"
+                        
+                        total_extracted = len(psc_shareholders)
+                        print(f"[enrich_one] ✅ Converted {total_extracted} PSCs to shareholders")
+                        
+                except Exception as psc_error:
+                    print(f"[enrich_one] ⚠️  Failed to convert PSC data: {psc_error}")
+            
             if total_extracted > 0:
                 print(f"[enrich_one] Successfully extracted {total_extracted} shareholders")
                 
