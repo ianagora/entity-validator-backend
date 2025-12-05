@@ -2421,6 +2421,67 @@ async def api_get_batch_items(batch_id: int, limit: int = 100, offset: int = 0):
             status_code=500
         )
 
+@app.get("/api/item/{item_id}")
+async def api_get_item_details(item_id: int):
+    """Get full details for a specific item including enriched data and shareholders"""
+    try:
+        with db() as conn:
+            item = conn.execute("SELECT * FROM items WHERE id=?", (item_id,)).fetchone()
+            
+        if not item:
+            return JSONResponse(
+                content={"error": "Item not found"},
+                status_code=404
+            )
+        
+        # Parse shareholders JSON
+        shareholders = []
+        if item["shareholders_json"]:
+            try:
+                shareholders_data = json.loads(item["shareholders_json"])
+                shareholders = shareholders_data.get("regular_shareholders", []) + shareholders_data.get("parent_shareholders", [])
+            except Exception:
+                pass
+        
+        # Read enriched bundle if available
+        bundle = {}
+        if item["enrich_json_path"]:
+            try:
+                with open(item["enrich_json_path"], 'r') as f:
+                    bundle = json.load(f)
+            except Exception:
+                pass
+        
+        # Build response
+        result = {
+            "id": item["id"],
+            "input_name": item["input_name"],
+            "company_number": item["company_number"],
+            "charity_number": item["charity_number"],
+            "resolved_registry": item["resolved_registry"],
+            "pipeline_status": item["pipeline_status"],
+            "enrich_status": item["enrich_status"],
+            "match_type": item["match_type"],
+            "confidence": item["confidence"],
+            "company_status": item["company_status"],
+            "created_at": item["created_at"],
+            "shareholders": shareholders,
+            "shareholders_status": item["shareholders_status"],
+            "profile": bundle.get("profile", {}),
+            "officers": bundle.get("officers", {}),
+            "pscs": bundle.get("pscs", {}),
+            "filings": bundle.get("filings", []),
+            "sources": bundle.get("sources", {})
+        }
+        
+        return JSONResponse(content=result)
+        
+    except Exception as e:
+        return JSONResponse(
+            content={"error": f"Failed to fetch item details: {str(e)}"},
+            status_code=500
+        )
+
 @app.get("/auto/{item_id}/compare", response_class=HTMLResponse)
 def auto_compare(request: Request, item_id: int):
     # ---------- load the item ----------
