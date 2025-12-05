@@ -64,11 +64,13 @@ def search_company_by_name(company_name: str) -> Optional[Dict[str, Any]]:
     Returns company number if found
     """
     try:
-        print(f"  🔍 Searching Companies House for: {company_name}")
+        print(f"  🔍 Searching Companies House for: {company_name}", flush=True)
         results = search_companies_house(company_name)
         
+        print(f"  📊 Search returned {len(results) if results else 0} results", flush=True)
+        
         if not results or len(results) == 0:
-            print(f"  ❌ No results found for: {company_name}")
+            print(f"  ❌ No results found for: {company_name}", flush=True)
             return None
         
         # Get the best match (first result, usually most relevant)
@@ -77,7 +79,7 @@ def search_company_by_name(company_name: str) -> Optional[Dict[str, Any]]:
         company_name_found = best_match.get('title', '')
         company_status = best_match.get('company_status', '')
         
-        print(f"  ✅ Found: {company_name_found} ({company_number}) - {company_status}")
+        print(f"  ✅ Found: {company_name_found} ({company_number}) - {company_status}", flush=True)
         
         return {
             'company_number': company_number,
@@ -87,7 +89,9 @@ def search_company_by_name(company_name: str) -> Optional[Dict[str, Any]]:
         }
         
     except Exception as e:
-        print(f"  ⚠️  Error searching for {company_name}: {e}")
+        import traceback
+        print(f"  ⚠️  Error searching for {company_name}: {e}", flush=True)
+        print(f"  Traceback: {traceback.format_exc()}", flush=True)
         return None
 
 

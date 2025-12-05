@@ -4021,6 +4021,30 @@ def get_psc_data(company_number: str):
             "company_number": company_number
         }
 
+@app.get("/api/search/companies")
+def search_companies(q: str, items_per_page: int = 5):
+    """Search Companies House by company name - for debugging recursive lookup."""
+    try:
+        from resolver import search_companies_house
+        results = search_companies_house(q, items_per_page)
+        
+        return {
+            "query": q,
+            "result_count": len(results) if results else 0,
+            "results": results,
+            "debug": {
+                "query_length": len(q),
+                "items_requested": items_per_page
+            }
+        }
+    except Exception as e:
+        import traceback
+        return {
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+            "query": q
+        }
+
 # ---------------- Downloads & health ----------------
 @app.get("/download")
 def download(path: str):
