@@ -40,25 +40,43 @@ def extract_text_with_ocr(pdf_path):
     return full_text
 
 def extract_shareholder_info_with_openai(pdf_path):
-    """Extract shareholder information from CS01 PDF using OpenAI GPT-4o"""
-    # Extract text from PDF
+    """Extract shareholder information from CS01 PDF - Tesseract first, OpenAI fallback"""
     full_text = ""
-    with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages:
-            text = page.extract_text()
-            if text:
-                full_text += text + "\n"
-
-    # If no text extracted and OCR is available, try OCR
-    if not full_text.strip() and OCR_AVAILABLE:
+    extraction_method = "unknown"
+    
+    # PRIORITY 1: Try Tesseract OCR first (more accurate, no hallucinations)
+    if OCR_AVAILABLE:
         try:
+            print("   Attempting Tesseract OCR extraction (primary method)...")
             full_text = extract_text_with_ocr(pdf_path)
+            if full_text.strip():
+                extraction_method = "tesseract_ocr"
+                print(f"   ✅ Tesseract OCR successful: {len(full_text)} characters extracted")
         except Exception as e:
-            print(f"   OCR failed: {e}")
+            print(f"   ⚠️ Tesseract OCR failed: {e}")
+    else:
+        print("   ⚠️ Tesseract OCR not available (pytesseract not installed)")
+    
+    # PRIORITY 2: If OCR failed or unavailable, try pdfplumber text extraction
+    if not full_text.strip():
+        print("   Attempting pdfplumber text extraction (fallback method)...")
+        with pdfplumber.open(pdf_path) as pdf:
+            for page in pdf.pages:
+                text = page.extract_text()
+                if text:
+                    full_text += text + "\n"
+        
+        if full_text.strip():
+            extraction_method = "pdfplumber"
+            print(f"   ✅ pdfplumber extraction successful: {len(full_text)} characters extracted")
+        else:
+            print("   ⚠️ pdfplumber extraction failed: no text found")
 
     if not full_text.strip():
-        print("   No text extracted from PDF")
+        print("   ❌ No text extracted from PDF (both OCR and pdfplumber failed)")
         return []
+    
+    print(f"   Using extraction method: {extraction_method}")
 
     # Initialize OpenAI client
     try:
