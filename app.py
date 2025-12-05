@@ -2279,6 +2279,148 @@ async def api_batch_upload(file: UploadFile = File(...)):
         except Exception:
             pass
 
+@app.get("/api/batches")
+async def api_get_batches():
+    """Get all batch runs with statistics"""
+    try:
+        with db() as conn:
+            runs = conn.execute("""
+                SELECT 
+                    r.id,
+                    r.created_at,
+                    r.upload_filename,
+                    COUNT(i.id) as total_entities,
+                    SUM(CASE WHEN i.pipeline_status='auto' THEN 1 ELSE 0 END) as auto_matched,
+                    SUM(CASE WHEN i.pipeline_status='manual' THEN 1 ELSE 0 END) as manual_review,
+                    SUM(CASE WHEN i.pipeline_status='error' THEN 1 ELSE 0 END) as errors,
+                    SUM(CASE WHEN i.enrich_status='done' THEN 1 ELSE 0 END) as enriched,
+                    SUM(CASE WHEN i.enrich_status='queued' OR i.enrich_status='pending' THEN 1 ELSE 0 END) as in_progress
+                FROM runs r
+                LEFT JOIN items i ON r.id = i.run_id
+                GROUP BY r.id
+                ORDER BY r.created_at DESC
+                LIMIT 50
+            """).fetchall()
+            
+            batches = []
+            for run in runs:
+                batches.append({
+                    "id": run["id"],
+                    "created_at": run["created_at"],
+                    "filename": run["upload_filename"],
+                    "stats": {
+                        "total": run["total_entities"] or 0,
+                        "auto_matched": run["auto_matched"] or 0,
+                        "manual_review": run["manual_review"] or 0,
+                        "errors": run["errors"] or 0,
+                        "enriched": run["enriched"] or 0,
+                        "in_progress": run["in_progress"] or 0
+                    }
+                })
+            
+            return JSONResponse(content={"batches": batches})
+    except Exception as e:
+        return JSONResponse(
+            content={"error": f"Failed to fetch batches: {str(e)}"},
+            status_code=500
+        )
+
+@app.get("/api/batch/{batch_id}/status")
+async def api_get_batch_status(batch_id: int):
+    """Get status for a specific batch"""
+    try:
+        with db() as conn:
+            run = conn.execute("""
+                SELECT 
+                    r.id,
+                    r.created_at,
+                    r.upload_filename,
+                    COUNT(i.id) as total_entities,
+                    SUM(CASE WHEN i.pipeline_status='auto' THEN 1 ELSE 0 END) as auto_matched,
+                    SUM(CASE WHEN i.pipeline_status='manual' THEN 1 ELSE 0 END) as manual_review,
+                    SUM(CASE WHEN i.pipeline_status='error' THEN 1 ELSE 0 END) as errors,
+                    SUM(CASE WHEN i.enrich_status='done' THEN 1 ELSE 0 END) as enriched,
+                    SUM(CASE WHEN i.enrich_status='queued' OR i.enrich_status='pending' THEN 1 ELSE 0 END) as in_progress
+                FROM runs r
+                LEFT JOIN items i ON r.id = i.run_id
+                WHERE r.id = ?
+                GROUP BY r.id
+            """, (batch_id,)).fetchone()
+            
+            if not run:
+                return JSONResponse(
+                    content={"error": "Batch not found"},
+                    status_code=404
+                )
+            
+            return JSONResponse(content={
+                "id": run["id"],
+                "created_at": run["created_at"],
+                "filename": run["upload_filename"],
+                "stats": {
+                    "total": run["total_entities"] or 0,
+                    "auto_matched": run["auto_matched"] or 0,
+                    "manual_review": run["manual_review"] or 0,
+                    "errors": run["errors"] or 0,
+                    "enriched": run["enriched"] or 0,
+                    "in_progress": run["in_progress"] or 0
+                }
+            })
+    except Exception as e:
+        return JSONResponse(
+            content={"error": f"Failed to fetch batch status: {str(e)}"},
+            status_code=500
+        )
+
+@app.get("/api/batch/{batch_id}/items")
+async def api_get_batch_items(batch_id: int, limit: int = 100, offset: int = 0):
+    """Get items for a specific batch"""
+    try:
+        with db() as conn:
+            items = conn.execute("""
+                SELECT 
+                    id,
+                    input_name,
+                    pipeline_status,
+                    match_type,
+                    company_number,
+                    charity_number,
+                    company_status,
+                    confidence,
+                    reason,
+                    enrich_status,
+                    resolved_registry,
+                    created_at
+                FROM items
+                WHERE run_id = ?
+                ORDER BY id ASC
+                LIMIT ? OFFSET ?
+            """, (batch_id, limit, offset)).fetchall()
+            
+            result_items = []
+            for item in items:
+                result_items.append({
+                    "id": item["id"],
+                    "input_name": item["input_name"],
+                    "pipeline_status": item["pipeline_status"],
+                    "match_type": item["match_type"],
+                    "company_number": item["company_number"],
+                    "charity_number": item["charity_number"],
+                    "company_status": item["company_status"],
+                    "confidence": item["confidence"],
+                    "reason": item["reason"],
+                    "enrich_status": item["enrich_status"],
+                    "resolved_registry": item["resolved_registry"],
+                    "created_at": item["created_at"]
+                })
+            
+            return JSONResponse(content={"items": result_items})
+    except Exception as e:
+        return JSONResponse(
+            content={"error": f"Failed to fetch batch items: {str(e)}"},
+            status_code=500
+        )
+
 @app.get("/auto/{item_id}/compare", response_class=HTMLResponse)
 def auto_compare(request: Request, item_id: int):
     # ---------- load the item ----------
