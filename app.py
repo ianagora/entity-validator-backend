@@ -2438,14 +2438,19 @@ async def api_get_item_details(item_id: int):
                 status_code=404
             )
         
-        # Parse shareholders JSON
+        # Parse shareholders JSON (handle both old flat array and new structured format)
         shareholders = []
         if item["shareholders_json"]:
             try:
                 shareholders_data = json.loads(item["shareholders_json"])
-                shareholders = shareholders_data.get("regular_shareholders", []) + shareholders_data.get("parent_shareholders", [])
-            except Exception:
-                pass
+                # New format: object with regular_shareholders and parent_shareholders
+                if isinstance(shareholders_data, dict):
+                    shareholders = shareholders_data.get("regular_shareholders", []) + shareholders_data.get("parent_shareholders", [])
+                # Old format: flat array
+                elif isinstance(shareholders_data, list):
+                    shareholders = shareholders_data
+            except Exception as e:
+                print(f"[api_get_item_details] Failed to parse shareholders_json: {e}")
         
         # Read enriched bundle if available
         bundle = {}
