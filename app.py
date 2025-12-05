@@ -3993,6 +3993,34 @@ def get_cs01_filings(company_number: str):
     except Exception as e:
         return {"error": str(e), "company_number": company_number}
 
+@app.get("/api/company/{company_number}/psc-data")
+def get_psc_data(company_number: str):
+    """Get PSC data for a company to debug PSC fallback."""
+    try:
+        from resolver import get_company_bundle
+        bundle = get_company_bundle(company_number)
+        psc_data = bundle.get("pscs", {})
+        psc_items = psc_data.get("items", [])
+        
+        return {
+            "company_number": company_number,
+            "psc_count": len(psc_items),
+            "psc_data": psc_data,
+            "bundle_keys": list(bundle.keys()),
+            "debug": {
+                "has_pscs_key": "pscs" in bundle,
+                "has_items": bool(psc_items),
+                "first_psc": psc_items[0] if psc_items else None
+            }
+        }
+    except Exception as e:
+        import traceback
+        return {
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+            "company_number": company_number
+        }
+
 # ---------------- Downloads & health ----------------
 @app.get("/download")
 def download(path: str):
