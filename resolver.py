@@ -841,6 +841,48 @@ def ccew_candidates(subject_name: str, *, limit: int = 20, allow_legacy_fallback
     return [], None, None
 
 # -----------------------------------------------------------------------------
+# Companies House Search
+# -----------------------------------------------------------------------------
+def search_companies_house(company_name: str, items_per_page: int = 5) -> List[Dict[str, Any]]:
+    """
+    Search Companies House by company name
+    Returns list of matching companies
+    """
+    if not company_name or not company_name.strip():
+        return []
+    
+    url = f"{BASE_URL_CH}/search/companies"
+    params = {
+        'q': company_name.strip(),
+        'items_per_page': items_per_page
+    }
+    
+    try:
+        resp = ch_session.get(url, params=params, timeout=REQ_TIMEOUT)
+        resp.raise_for_status()
+        data = resp.json()
+        
+        items = data.get('items', [])
+        
+        results = []
+        for item in items:
+            results.append({
+                'company_number': item.get('company_number'),
+                'title': item.get('title'),
+                'company_status': item.get('company_status'),
+                'company_type': item.get('company_type'),
+                'date_of_creation': item.get('date_of_creation'),
+                'address': item.get('address', {}),
+                'matches': item.get('matches', {})
+            })
+        
+        return results
+        
+    except Exception as e:
+        print(f"[CH Search] Error searching for '{company_name}': {e}", flush=True)
+        return []
+
+# -----------------------------------------------------------------------------
 # Unified resolver
 # -----------------------------------------------------------------------------
 def resolve_company(subject_name: str, top_n: int = 3, sources: Tuple[str, ...] = ("ch","ccew")) -> dict:

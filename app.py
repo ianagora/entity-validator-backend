@@ -31,6 +31,9 @@ from resolver import get_company_filing_history, get_filing_detail, get_document
 from shareholder_information import extract_shareholders_for_company
 from shareholder_information import identify_parent_companies
 
+# corporate structure (recursive ownership tree)
+from corporate_structure import build_ownership_tree, flatten_ownership_tree
+
 # ---------------- App Setup ----------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -1562,12 +1565,37 @@ def enrich_one(item_id: int):
             total_extracted = len(shareholder_result.get("regular_shareholders", [])) + len(shareholder_result.get("parent_shareholders", []))
             if total_extracted > 0:
                 print(f"[enrich_one] Successfully extracted {total_extracted} shareholders")
+                
+                # Build recursive corporate ownership tree
+                try:
+                    print(f"[enrich_one] Building corporate ownership tree...")
+                    company_name = bundle.get("profile", {}).get("company_name", "Unknown")
+                    ownership_tree = build_ownership_tree(
+                        company_number, 
+                        company_name,
+                        depth=0,
+                        max_depth=3  # Limit to 3 layers deep (prevents excessive API calls)
+                    )
+                    bundle["ownership_tree"] = ownership_tree
+                    
+                    # Also create flattened view for easier display
+                    flattened_chains = flatten_ownership_tree(ownership_tree)
+                    bundle["ownership_chains"] = flattened_chains
+                    
+                    print(f"[enrich_one] ✅ Built ownership tree with {len(flattened_chains)} ultimate ownership chains")
+                except Exception as tree_error:
+                    print(f"[enrich_one] ⚠️  Failed to build ownership tree: {tree_error}")
+                    bundle["ownership_tree"] = None
+                    bundle["ownership_chains"] = []
+                    
         except Exception as e:
             print(f"[enrich_one] Failed to extract shareholders for {company_number}: {e}")
             bundle["regular_shareholders"] = []
             bundle["parent_shareholders"] = []
             bundle["total_shares"] = 0
             bundle["shareholders_status"] = "extraction_error"
+            bundle["ownership_tree"] = None
+            bundle["ownership_chains"] = []
 
         json_path = os.path.join(out_dir, f"enriched_{company_number}_{ts}.json")
         xlsx_path = os.path.join(out_dir, f"enriched_{company_number}_{ts}.xlsx")
@@ -2502,6 +2530,8 @@ async def api_get_item_details(item_id: int):
             "created_at": item["created_at"],
             "shareholders": shareholders,
             "shareholders_status": item["shareholders_status"],
+            "ownership_tree": bundle.get("ownership_tree", None),
+            "ownership_chains": bundle.get("ownership_chains", []),
             "profile": bundle.get("profile", {}),
             "officers": bundle.get("officers", {}),
             "pscs": bundle.get("pscs", {}),
