@@ -2506,6 +2506,59 @@ async def api_get_batch_items(batch_id: int, limit: int = 100, offset: int = 0):
             status_code=500
         )
 
+@app.get("/api/item/{item_id}/test-tree")
+def test_ownership_tree(item_id: int):
+    """Test ownership tree building for debugging"""
+    try:
+        with db() as conn:
+            item = conn.execute("SELECT * FROM items WHERE id=?", (item_id,)).fetchone()
+        
+        if not item:
+            return JSONResponse(content={"error": "Item not found"}, status_code=404)
+        
+        # Get shareholders from database
+        shareholders_json = item["shareholders_json"]
+        if not shareholders_json:
+            return JSONResponse(content={"error": "No shareholders data"}, status_code=400)
+        
+        shareholders_data = json.loads(shareholders_json)
+        all_shareholders = []
+        
+        if isinstance(shareholders_data, dict):
+            all_shareholders = shareholders_data.get("regular_shareholders", []) + shareholders_data.get("parent_shareholders", [])
+        elif isinstance(shareholders_data, list):
+            all_shareholders = shareholders_data
+        
+        company_number = item["company_number"]
+        company_name = item["input_name"]
+        
+        # Test tree building
+        print(f"[TEST] Building tree for {company_name} ({company_number})")
+        print(f"[TEST] Shareholders to pass: {len(all_shareholders)}")
+        
+        ownership_tree = build_ownership_tree(
+            company_number,
+            company_name,
+            depth=0,
+            max_depth=3,
+            visited=None,
+            initial_shareholders=all_shareholders
+        )
+        
+        return JSONResponse(content={
+            "input_shareholders": len(all_shareholders),
+            "shareholder_names": [sh.get("name") for sh in all_shareholders],
+            "tree_shareholders": len(ownership_tree.get("shareholders", [])),
+            "tree": ownership_tree
+        })
+        
+    except Exception as e:
+        import traceback
+        return JSONResponse(
+            content={"error": str(e), "traceback": traceback.format_exc()},
+            status_code=500
+        )
+
 @app.post("/api/item/{item_id}/reset")
 def reset_item_enrichment(item_id: int):
     """Reset an item's enrichment status from 'running' to 'pending' to retry"""
