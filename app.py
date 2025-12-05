@@ -2468,6 +2468,46 @@ async def api_get_batch_items(batch_id: int, limit: int = 100, offset: int = 0):
             status_code=500
         )
 
+@app.post("/api/item/{item_id}/reset")
+def reset_item_enrichment(item_id: int):
+    """Reset an item's enrichment status from 'running' to 'pending' to retry"""
+    try:
+        with db() as conn:
+            # Check if item exists and is stuck
+            row = conn.execute("SELECT id, enrich_status FROM items WHERE id=?", (item_id,)).fetchone()
+            if not row:
+                return JSONResponse(
+                    content={"error": "Item not found"},
+                    status_code=404
+                )
+            
+            old_status = row["enrich_status"]
+            
+            # Reset status to pending and re-enqueue
+            conn.execute("UPDATE items SET enrich_status='pending' WHERE id=?", (item_id,))
+            
+            # Re-enqueue enrichment
+            registry = conn.execute("SELECT resolved_registry FROM items WHERE id=?", (item_id,)).fetchone()
+            if registry and registry["resolved_registry"]:
+                reg = canonical_registry_name(registry["resolved_registry"])
+                if reg == "Companies House":
+                    enqueue_enrich(item_id)
+                elif reg == "Charity Commission":
+                    enqueue_enrich_charity(item_id)
+            
+            return JSONResponse(content={
+                "success": True,
+                "item_id": item_id,
+                "old_status": old_status,
+                "new_status": "pending",
+                "message": "Item reset and re-enqueued for enrichment"
+            })
+    except Exception as e:
+        return JSONResponse(
+            content={"error": f"Failed to reset item: {str(e)}"},
+            status_code=500
+        )
+
 @app.get("/api/item/{item_id}")
 async def api_get_item_details(item_id: int):
     """Get full details for a specific item including enriched data and shareholders"""
