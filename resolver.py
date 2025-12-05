@@ -858,7 +858,7 @@ def search_companies_house(company_name: str, items_per_page: int = 5) -> List[D
     }
     
     try:
-        resp = ch_session.get(url, params=params, timeout=REQ_TIMEOUT)
+        resp = SESSION.get(url, params=params, auth=AUTH_CH, timeout=REQ_TIMEOUT)
         resp.raise_for_status()
         data = resp.json()
         
@@ -879,7 +879,9 @@ def search_companies_house(company_name: str, items_per_page: int = 5) -> List[D
         return results
         
     except Exception as e:
+        import traceback
         print(f"[CH Search] Error searching for '{company_name}': {e}", flush=True)
+        print(f"[CH Search] Traceback: {traceback.format_exc()}", flush=True)
         return []
 
 # -----------------------------------------------------------------------------
