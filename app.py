@@ -1627,6 +1627,9 @@ def enrich_one(item_id: int):
                     # Combine regular and parent shareholders for tree building
                     all_shareholders = bundle.get("regular_shareholders", []) + bundle.get("parent_shareholders", [])
                     
+                    print(f"[enrich_one] DEBUG: Passing {len(all_shareholders)} shareholders to tree builder")
+                    print(f"[enrich_one] DEBUG: Shareholders: {[sh.get('name') for sh in all_shareholders]}")
+                    
                     ownership_tree = build_ownership_tree(
                         company_number, 
                         company_name,
@@ -1635,6 +1638,9 @@ def enrich_one(item_id: int):
                         visited=None,
                         initial_shareholders=all_shareholders  # Pass PSC or filing-extracted shareholders
                     )
+                    
+                    print(f"[enrich_one] DEBUG: Tree returned with {len(ownership_tree.get('shareholders', []))} shareholders")
+                    
                     bundle["ownership_tree"] = ownership_tree
                     
                     # Also create flattened view for easier display
@@ -1643,7 +1649,9 @@ def enrich_one(item_id: int):
                     
                     print(f"[enrich_one] ✅ Built ownership tree with {len(flattened_chains)} ultimate ownership chains")
                 except Exception as tree_error:
+                    import traceback
                     print(f"[enrich_one] ⚠️  Failed to build ownership tree: {tree_error}")
+                    print(f"[enrich_one] Traceback: {traceback.format_exc()}")
                     bundle["ownership_tree"] = None
                     bundle["ownership_chains"] = []
                     

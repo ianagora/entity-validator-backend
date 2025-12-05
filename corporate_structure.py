@@ -151,6 +151,8 @@ def build_ownership_tree(
             extraction_status = 'pre-extracted'
             print(f"{indent}📊 Using pre-extracted shareholders (from PSC or filings)")
             print(f"{indent}👥 Total shareholders: {len(all_shareholders)}")
+            print(f"{indent}DEBUG: initial_shareholders = {initial_shareholders}")
+            print(f"{indent}DEBUG: all_shareholders = {all_shareholders}")
         else:
             # Extract shareholders normally for child companies
             shareholder_result = extract_shareholders_for_company(company_number)
