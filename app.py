@@ -2477,6 +2477,258 @@ async def api_get_batch_status(batch_id: int):
             status_code=500
         )
 
+def build_screening_list(bundle: dict, shareholders: list, item: dict) -> dict:
+    """
+    Build KYC/AML screening list based on regulatory requirements.
+    Returns categorized list of persons/entities requiring screening.
+    
+    Based on UK AML/KYC requirements:
+    - Directors, Company Secretary, PSCs
+    - Direct shareholders ≥10%
+    - Corporate shareholders ≥10% (screen entire entity)
+    - Parent companies, grandparent companies
+    - Ultimate parent companies
+    - UBOs (individuals ≥10% indirect ownership)
+    - Trust-related parties (settlors, trustees, protectors, beneficiaries)
+    - Guarantee company members
+    - Associated persons (authorized signatories, introducers, SMF holders)
+    - Subsidiaries (≥10% ownership or effective control)
+    """
+    screening = {
+        "entity": [],
+        "governance_and_control": [],
+        "ownership_chain": [],
+        "ubos": [],
+        "trusts": [],
+        "guarantee_companies": [],
+        "associated_persons": [],
+        "subsidiaries": []
+    }
+    
+    profile = bundle.get("profile", {})
+    officers_data = bundle.get("officers", {})
+    pscs_data = bundle.get("pscs", {})
+    ownership_tree = bundle.get("ownership_tree", {})
+    
+    # 1. ENTITY - The legal entity itself
+    screening["entity"].append({
+        "name": item.get("input_name") or profile.get("company_name", "Unknown"),
+        "type": "Company/Charity/Association/Trust",
+        "company_number": item.get("company_number"),
+        "charity_number": item.get("charity_number"),
+        "status": profile.get("company_status", "Unknown"),
+        "category": "Legal Entity"
+    })
+    
+    # 2. GOVERNANCE & CONTROL
+    # Directors
+    officers_items = officers_data.get("items", [])
+    for officer in officers_items:
+        if officer.get("officer_role", "").lower() in ["director", "corporate-director", "shadow-director"]:
+            screening["governance_and_control"].append({
+                "name": officer.get("name", "Unknown"),
+                "role": officer.get("officer_role", "Director"),
+                "appointed_on": officer.get("appointed_on"),
+                "resigned_on": officer.get("resigned_on"),
+                "nationality": officer.get("nationality"),
+                "dob": f"{officer.get('date_of_birth', {}).get('month')}/{officer.get('date_of_birth', {}).get('year')}" if officer.get("date_of_birth") else None,
+                "category": "Directors",
+                "description": "All current directors including shadow directors"
+            })
+    
+    # Company Secretary
+    for officer in officers_items:
+        if officer.get("officer_role", "").lower() in ["secretary", "corporate-secretary"]:
+            screening["governance_and_control"].append({
+                "name": officer.get("name", "Unknown"),
+                "role": officer.get("officer_role", "Secretary"),
+                "appointed_on": officer.get("appointed_on"),
+                "category": "Company Secretary",
+                "description": "If appointed"
+            })
+    
+    # PSCs
+    psc_items = pscs_data.get("items", [])
+    for psc in psc_items:
+        if not psc.get("ceased", False):
+            natures = psc.get("natures_of_control", [])
+            screening["governance_and_control"].append({
+                "name": psc.get("name", "Unknown"),
+                "role": "Person with Significant Control",
+                "kind": psc.get("kind", "Unknown"),
+                "natures_of_control": natures,
+                "notified_on": psc.get("notified_on"),
+                "category": "PSCs",
+                "description": "Anyone meeting UK PSC criteria (>10% shares/votes or significant influence)"
+            })
+    
+    # 3. OWNERSHIP CHAIN - Extract from ownership tree
+    def extract_ownership_chain(tree_node, depth=0):
+        """Recursively extract shareholders from ownership tree"""
+        if not tree_node or depth > 10:  # Prevent infinite loops
+            return
+        
+        shareholders_in_node = tree_node.get("shareholders", [])
+        for sh in shareholders_in_node:
+            sh_name = sh.get("name", "Unknown")
+            sh_percentage = sh.get("percentage", 0)
+            sh_shares = sh.get("shares_held", 0)
+            is_company = sh.get("is_company", False)
+            company_number = sh.get("company_number")
+            
+            # Direct shareholders ≥10%
+            if depth == 0 and sh_percentage >= 10:
+                category = "Direct Shareholders ≥10%"
+                description = "Individuals or entities with ≥10% shareholding"
+                if is_company:
+                    category = "Corporate Shareholders"
+                    description = "Screen entire entity if it owns ≥10%"
+                
+                screening["ownership_chain"].append({
+                    "name": sh_name,
+                    "role": "Shareholder",
+                    "shareholding": f"{sh_percentage}%",
+                    "shares_held": sh_shares,
+                    "is_company": is_company,
+                    "company_number": company_number,
+                    "category": category,
+                    "description": description,
+                    "depth": depth
+                })
+            
+            # Parent companies (any parent with ownership/control)
+            elif depth == 1 and is_company:
+                screening["ownership_chain"].append({
+                    "name": sh_name,
+                    "role": "Parent Company",
+                    "shareholding": f"{sh_percentage}%",
+                    "is_company": True,
+                    "company_number": company_number,
+                    "category": "Parent Companies",
+                    "description": "Any parent entity with ownership/control",
+                    "depth": depth
+                })
+            
+            # Grandparent companies
+            elif depth == 2 and is_company:
+                screening["ownership_chain"].append({
+                    "name": sh_name,
+                    "role": "Grandparent Company",
+                    "shareholding": f"{sh_percentage}%",
+                    "is_company": True,
+                    "company_number": company_number,
+                    "category": "Grandparent Companies",
+                    "description": "Follow ownership chain upward",
+                    "depth": depth
+                })
+            
+            # Ultimate parent companies
+            elif depth >= 3 and is_company and not sh.get("children"):
+                screening["ownership_chain"].append({
+                    "name": sh_name,
+                    "role": "Ultimate Parent Company",
+                    "shareholding": f"{sh_percentage}%",
+                    "is_company": True,
+                    "company_number": company_number,
+                    "category": "Ultimate Parent Companies",
+                    "description": "Final entity in chain (unless exempt per policy)",
+                    "depth": depth
+                })
+            
+            # UBOs - Individuals with ≥10% indirect ownership
+            if not is_company and sh_percentage >= 10:
+                screening["ubos"].append({
+                    "name": sh_name,
+                    "role": "Ultimate Beneficial Owner",
+                    "shareholding": f"{sh_percentage}%",
+                    "shares_held": sh_shares,
+                    "indirect_ownership": True,
+                    "category": "Individuals ≥10% indirect ownership",
+                    "description": "Multiply percentages across layers to compute indirect control",
+                    "depth": depth
+                })
+            
+            # UBOs with control but no ownership (golden shares, veto rights, etc.)
+            if not is_company and "control" in str(sh.get("psc_natures", [])).lower():
+                screening["ubos"].append({
+                    "name": sh_name,
+                    "role": "Individual with Control",
+                    "shareholding": "No ownership disclosed",
+                    "category": "Individuals with control but no ownership",
+                    "description": "Golden share, veto rights, dominant creditor",
+                    "depth": depth
+                })
+            
+            # Recurse into children
+            if sh.get("children"):
+                extract_ownership_chain(sh, depth + 1)
+    
+    # Start extraction from root
+    if ownership_tree:
+        extract_ownership_chain(ownership_tree)
+    
+    # 4. TRUSTS - Detect trust-related entities
+    for sh in shareholders:
+        sh_name = sh.get("name", "").lower()
+        # Detect trustees
+        if "trustee" in sh_name or "trust" in sh_name:
+            screening["trusts"].append({
+                "name": sh.get("name"),
+                "role": "Trustee",
+                "shareholding": f"{sh.get('percentage', 0)}%",
+                "category": "Trustees",
+                "description": "Always screen",
+                "trust_type": "Detected from name"
+            })
+    
+    # Check PSCs for trusts
+    for psc in psc_items:
+        if "trust" in psc.get("kind", "").lower():
+            screening["trusts"].append({
+                "name": psc.get("name"),
+                "role": "Settlor/Beneficiary",
+                "category": "Trust Parties",
+                "description": "Settlor(s), Trustees, Protector(s), Beneficiaries",
+                "kind": psc.get("kind")
+            })
+    
+    # 5. GUARANTEE COMPANIES - Members for companies limited by guarantee
+    company_type = profile.get("type", "").lower()
+    if "guarant" in company_type:
+        # Note: Member information not typically in public data
+        screening["guarantee_companies"].append({
+            "name": "Guarantee Members",
+            "category": "Guarantee Company Members",
+            "description": "Company is limited by guarantee - member information required",
+            "company_type": company_type,
+            "note": "Member information not available in public registers"
+        })
+    
+    # 6. ASSOCIATED PERSONS
+    # Note: This data is typically not in public registers
+    # Would need to be collected separately via client questionnaire
+    screening["associated_persons"].append({
+        "category": "Associated Persons",
+        "description": "Authorized Signatories, Introducers/Brokers, SMF Holders",
+        "note": "This information must be collected via client questionnaire - not available in public registers",
+        "required": [
+            "Anyone with authority to move funds",
+            "If involved in onboarding or decision influence",
+            "Senior Management Functions in regulated firms"
+        ]
+    })
+    
+    # 7. SUBSIDIARIES
+    # Note: Subsidiary information not readily available in bundle
+    # Would need to fetch filing history or use separate API
+    screening["subsidiaries"].append({
+        "category": "Controlled Subsidiaries / Joint Ventures",
+        "description": "≥10% ownership or effective control / If entity has control or sanctioned exposure risk",
+        "note": "Subsidiary data requires additional API calls or filing analysis"
+    })
+    
+    return screening
+
 @app.get("/api/batch/{batch_id}/items")
 async def api_get_batch_items(batch_id: int, limit: int = 100, offset: int = 0):
     """Get items for a specific batch"""
@@ -2655,6 +2907,9 @@ async def api_get_item_details(item_id: int):
             except Exception:
                 pass
         
+        # Build KYC/AML screening list
+        screening_list = build_screening_list(bundle, shareholders, item)
+        
         # Build response
         result = {
             "id": item["id"],
@@ -2676,7 +2931,8 @@ async def api_get_item_details(item_id: int):
             "officers": bundle.get("officers", {}),
             "pscs": bundle.get("pscs", {}),
             "filings": bundle.get("filings", []),
-            "sources": bundle.get("sources", {})
+            "sources": bundle.get("sources", {}),
+            "screening_list": screening_list  # KYC/AML screening requirements
         }
         
         return JSONResponse(content=result)
