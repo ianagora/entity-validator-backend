@@ -1581,23 +1581,43 @@ def enrich_one(item_id: int):
                             # Determine if it's a company or individual
                             is_company = "corporate" in psc_kind or "legal" in psc_kind
                             
-                            # Try to determine ownership percentage from natures
-                            percentage = 0
-                            if any("75-to-100" in n for n in natures):
-                                percentage = 87.5  # Approximate
-                            elif any("50-to-75" in n for n in natures):
+                            # Extract ownership percentage from PSC natures
+                            # PSC register provides bands, not exact percentages
+                            percentage = None
+                            percentage_band = None
+                            
+                            # Look for ownership-of-shares first (most accurate)
+                            if any("ownership-of-shares-75-to-100" in n for n in natures):
+                                percentage_band = "75-100%"
+                                percentage = 87.5  # Midpoint for sorting/calculations only
+                            elif any("ownership-of-shares-50-to-75" in n for n in natures):
+                                percentage_band = "50-75%"
                                 percentage = 62.5
-                            elif any("25-to-50" in n for n in natures):
+                            elif any("ownership-of-shares-25-to-50" in n for n in natures):
+                                percentage_band = "25-50%"
+                                percentage = 37.5
+                            # Fallback to voting rights if no ownership specified
+                            elif any("voting-rights-75-to-100" in n for n in natures):
+                                percentage_band = "75-100% (voting rights)"
+                                percentage = 87.5
+                            elif any("voting-rights-50-to-75" in n for n in natures):
+                                percentage_band = "50-75% (voting rights)"
+                                percentage = 62.5
+                            elif any("voting-rights-25-to-50" in n for n in natures):
+                                percentage_band = "25-50% (voting rights)"
                                 percentage = 37.5
                             else:
-                                percentage = 100  # Assume 100% if unclear
+                                percentage_band = "Unknown"
+                                percentage = 0
                             
                             shareholder = {
                                 "name": psc_name,
                                 "shares_held": "Unknown (from PSC)",
                                 "percentage": percentage,
+                                "percentage_band": percentage_band,  # Show the actual band
                                 "share_class": "Ordinary",
-                                "source": "PSC Register"
+                                "source": "PSC Register",
+                                "psc_natures": natures  # Include raw natures for transparency
                             }
                             
                             psc_shareholders.append(shareholder)
