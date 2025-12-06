@@ -2908,7 +2908,9 @@ async def api_get_item_details(item_id: int):
                 pass
         
         # Build KYC/AML screening list
-        screening_list = build_screening_list(bundle, shareholders, item)
+        # Convert sqlite3.Row to dict for screening list function
+        item_dict = dict(item) if item else {}
+        screening_list = build_screening_list(bundle, shareholders, item_dict)
         
         # Build response
         result = {
