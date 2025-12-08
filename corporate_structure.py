@@ -165,16 +165,80 @@ def build_ownership_tree(
             print(f"{indent}DEBUG: all_shareholders = {all_shareholders}")
         else:
             # Extract shareholders normally for child companies
-            shareholder_result = extract_shareholders_for_company(company_number)
-            regular_shareholders = shareholder_result.get('regular_shareholders', [])
-            parent_shareholders = shareholder_result.get('parent_shareholders', [])
-            all_shareholders = regular_shareholders + parent_shareholders
-            extraction_status = shareholder_result.get('extraction_status', 'unknown')
+            # First check if this is a company limited by guarantee
+            from resolver import get_company_bundle
+            bundle = get_company_bundle(company_number)
+            profile = bundle.get("profile", {})
+            company_type = (profile.get("type") or "").lower()
+            is_guarantee = "guarant" in company_type
             
-            print(f"{indent}📊 Extraction status: {extraction_status}")
-            print(f"{indent}👥 Total shareholders: {len(all_shareholders)}")
-            print(f"{indent}   - Regular: {len(regular_shareholders)}")
-            print(f"{indent}   - Corporate: {len(parent_shareholders)}")
+            if is_guarantee:
+                # Use PSC data for companies limited by guarantee
+                print(f"{indent}🏛️  Company limited by guarantee - using PSC register")
+                psc_data = bundle.get("pscs", {})
+                all_shareholders = []
+                
+                if psc_data and psc_data.get("items"):
+                    for psc in psc_data['items']:
+                        psc_name = psc.get("name", "Unknown")
+                        psc_kind = psc.get("kind", "")
+                        natures = psc.get("natures_of_control", [])
+                        
+                        # Extract control percentage
+                        percentage = None
+                        percentage_band = None
+                        
+                        if any("voting-rights-75-to-100" in n for n in natures):
+                            percentage_band = "75-100% (voting rights)"
+                            percentage = 87.5
+                        elif any("voting-rights-50-to-75" in n for n in natures):
+                            percentage_band = "50-75% (voting rights)"
+                            percentage = 62.5
+                        elif any("voting-rights-25-to-50" in n for n in natures):
+                            percentage_band = "25-50% (voting rights)"
+                            percentage = 37.5
+                        elif any("right-to-appoint-and-remove-directors" in n for n in natures):
+                            percentage_band = "Control (directors)"
+                            percentage = 100
+                        else:
+                            percentage_band = "Significant control"
+                            percentage = 50
+                        
+                        shareholder = {
+                            "name": psc_name,
+                            "shares_held": "N/A (guarantee company)",
+                            "percentage": percentage,
+                            "percentage_band": percentage_band,
+                            "share_class": "N/A",
+                            "source": "PSC Register",
+                            "psc_natures": natures
+                        }
+                        all_shareholders.append(shareholder)
+                
+                extraction_status = "found_via_psc_guarantee"
+                regular_shareholders = all_shareholders
+                parent_shareholders = []
+                shareholder_result = {
+                    'total_shares': 0,
+                    'extraction_status': extraction_status,
+                    'regular_shareholders': regular_shareholders,
+                    'parent_shareholders': parent_shareholders
+                }
+                
+                print(f"{indent}📊 Extraction status: {extraction_status}")
+                print(f"{indent}👥 Total PSCs: {len(all_shareholders)}")
+            else:
+                # Normal company - extract from filings
+                shareholder_result = extract_shareholders_for_company(company_number)
+                regular_shareholders = shareholder_result.get('regular_shareholders', [])
+                parent_shareholders = shareholder_result.get('parent_shareholders', [])
+                all_shareholders = regular_shareholders + parent_shareholders
+                extraction_status = shareholder_result.get('extraction_status', 'unknown')
+                
+                print(f"{indent}📊 Extraction status: {extraction_status}")
+                print(f"{indent}👥 Total shareholders: {len(all_shareholders)}")
+                print(f"{indent}   - Regular: {len(regular_shareholders)}")
+                print(f"{indent}   - Corporate: {len(parent_shareholders)}")
         
         # Process each shareholder
         processed_shareholders = []

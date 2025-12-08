@@ -1522,14 +1522,20 @@ def enrich_one(item_id: int):
         company_type = (profile.get("type") or "").lower()
         is_company_limited_by_guarantee = "guarant" in company_type
         
+        # Initialize total_extracted at function scope
+        total_extracted = 0
+        shareholders_status = None
+        
         if is_company_limited_by_guarantee:
             print(f"[enrich_one] Company type is '{profile.get('type')}' - skipping CS01/shareholder extraction (no share capital)")
             print(f"[enrich_one] Will use PSC register for ownership structure instead")
             bundle["cs01_filings"] = []
             bundle["cs01_documents"] = []
             bundle["total_shares"] = 0
-            # Don't set shareholders yet - will populate from PSC below
-            total_extracted = 0
+            bundle["regular_shareholders"] = []
+            bundle["parent_shareholders"] = []
+            bundle["shareholders_status"] = "pending_psc_extraction"
+            # total_extracted stays 0 - will trigger PSC logic below
         else:
             # Add CS01 filings and documents to the bundle
             try:
@@ -1570,7 +1576,6 @@ def enrich_one(item_id: int):
                 bundle["cs01_documents"] = []
 
             # Extract shareholder information using intelligent CS01 -> AR01 fallback
-            shareholders_status = None
             try:
                 print(f"[enrich_one] Extracting shareholder information for {company_number}...")
                 shareholder_result = extract_shareholders_for_company(company_number)
