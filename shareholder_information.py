@@ -106,10 +106,17 @@ Please analyze the following text from a CS01 PDF and extract all shareholder in
   ]
 }}
 
-Rules:
+CRITICAL Rules:
 - Extract ALL shareholders mentioned in the document
+- For the "name" field: Extract ONLY the text that appears after "Name:" in each shareholding section
+- DO NOT include trust names, settlement names, or discretionary trust references in the "name" field
+- Trust references like "RE W C ROSE DISCRETIONARY TRUST" or "RE. WC ROSE SETTLEMENT" should be IGNORED
+- The shareholder name is the legal entity that holds the shares, not the trust they represent
+- Example: If you see "Name: S W J ROSE" followed by "S W ROSE RE W C ROSE DISCRETIONARY TRUST", extract only "S W J ROSE"
+- Example: If you see "Name: GREENE & GREENE TRUSTEES LIMITED" followed by "SWJ ROSE RE. WC ROSE SETTLEMENT", extract only "GREENE & GREENE TRUSTEES LIMITED"
 - For transfers array: include any transfer information found (amount and date), or leave as empty array [] if no transfers mentioned
-- shares_held should be a number (integer)
+- shares_held should be a number (integer) - this is the number of shares held AS AT THE DATE OF THIS CONFIRMATION STATEMENT
+- If shareholding shows "0 ORDINARY shares held as at the date of this confirmation statement", set shares_held to 0
 - share_class is typically "ORDINARY" but could be other types
 - If no shareholders are found, return {{"shareholders": []}}
 - Make sure names are properly capitalized and complete
