@@ -99,18 +99,18 @@ def build_ownership_tree(
     company_number: str, 
     company_name: str,
     depth: int = 0, 
-    max_depth: int = 3,
+    max_depth: int = 50,  # Effectively unlimited (circular refs prevented by visited set)
     visited: Optional[set] = None,
     initial_shareholders: Optional[List[Dict[str, Any]]] = None
 ) -> Dict[str, Any]:
     """
-    Recursively build corporate ownership tree
+    Recursively build corporate ownership tree until reaching end of chain
     
     Args:
         company_number: Companies House number
         company_name: Company name (for display)
         depth: Current depth in tree (0 = root)
-        max_depth: Maximum depth to recurse (prevent infinite loops)
+        max_depth: Maximum depth to recurse (default 50 = effectively unlimited, circular refs handled by visited set)
         visited: Set of already visited company numbers (prevent circular references)
         initial_shareholders: Pre-extracted shareholders for root company (avoids re-extraction)
     
