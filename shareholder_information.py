@@ -269,22 +269,31 @@ def calculate_shareholder_percentages(shareholders):
         except (ValueError, TypeError):
             continue
 
-    # Calculate percentages
+    # Filter out shareholders with 0 shares and calculate percentages
+    filtered_shareholders = []
     for shareholder in shareholders:
         try:
             shares_held = shareholder.get('shares_held', 0)
             if isinstance(shares_held, str):
                 shares_held = int(shares_held.replace(',', ''))
+            
+            # CRITICAL FIX: Skip shareholders with 0 shares
+            if int(shares_held) == 0:
+                print(f"  ⚠️ FILTERING OUT 0-share shareholder: {shareholder.get('name', 'N/A')}")
+                continue
 
             if total_shares > 0:
                 percentage = (int(shares_held) / total_shares) * 100
                 shareholder['percentage'] = round(percentage, 2)
             else:
                 shareholder['percentage'] = 0.0
+            
+            filtered_shareholders.append(shareholder)
         except (ValueError, TypeError):
             shareholder['percentage'] = 0.0
+            filtered_shareholders.append(shareholder)
 
-    return shareholders, total_shares
+    return filtered_shareholders, total_shares
 
 def identify_parent_companies(shareholders):
     """Identify shareholders that are parent companies and separate them"""
