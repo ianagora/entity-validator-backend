@@ -273,21 +273,31 @@ def process_filing_type(company_number, filing_type):
                         if extracted_shareholders:
                             print(f"   ✅ Successfully extracted {len(extracted_shareholders)} shareholders from {filing_type} ({filing_date})")
                             
+                            # DEBUG: Log ALL extracted shareholders BEFORE filtering
+                            print(f"   📋 DEBUG - RAW EXTRACTION from {filing_type} ({filing_date}, doc_id: {doc_id}):")
+                            for idx, sh in enumerate(extracted_shareholders, 1):
+                                sh_name = sh.get('name', 'N/A')
+                                sh_shares = sh.get('shares_held', 'N/A')
+                                sh_class = sh.get('share_class', 'N/A')
+                                print(f"      {idx}. {sh_name} - {sh_shares} shares ({sh_class})")
+                            
                             # Check if we found parent/corporate shareholders (companies, not individuals)
                             # Look for company suffixes like LIMITED, LTD, PLC, LLP, etc.
                             parent_suffixes = ['limited', 'ltd', 'holdings', 'plc', 'llp', 'lp', 'trust']
                             has_corporate = False
+                            corporate_names = []
                             for sh in extracted_shareholders:
                                 name = sh.get('name', '').lower()
                                 if any(suffix in name for suffix in parent_suffixes):
                                     has_corporate = True
-                                    break
+                                    corporate_names.append(sh.get('name', 'N/A'))
                             
                             if has_corporate:
                                 # Found corporate shareholders - use these and stop
                                 shareholders = extracted_shareholders
                                 has_parent_shareholders = True
-                                print(f"   🏢 Found corporate shareholders - will use this filing and stop processing")
+                                print(f"   🏢 Found corporate shareholders: {', '.join(corporate_names)}")
+                                print(f"   🛑 STOP: Will use this filing ({filing_type} {filing_date}) and stop processing")
                                 break  # Early exit - no need to check more filings
                             else:
                                 # Only individuals - save as backup but keep looking
@@ -408,8 +418,17 @@ def extract_shareholders_for_company(company_number):
 
     if cs01_found and cs01_shareholders:
         print("\n✅ SUCCESS: Shareholder information found in CS01")
+        print(f"📊 DEBUG - CS01 shareholders BEFORE filtering (count: {len(cs01_shareholders)}):")
+        for idx, sh in enumerate(cs01_shareholders, 1):
+            print(f"   {idx}. {sh.get('name', 'N/A')} - {sh.get('shares_held', 'N/A')} shares")
+        
         # Process shareholders: calculate percentages and separate into regular vs parent
         shareholders_with_percentages, total_shares = calculate_shareholder_percentages(cs01_shareholders)
+        
+        print(f"📊 DEBUG - CS01 shareholders AFTER 0-share filtering (count: {len(shareholders_with_percentages)}):")
+        for idx, sh in enumerate(shareholders_with_percentages, 1):
+            print(f"   {idx}. {sh.get('name', 'N/A')} - {sh.get('shares_held', 'N/A')} shares ({sh.get('percentage', 0)}%)")
+        
         regular_shareholders, parent_shareholders = identify_parent_companies(shareholders_with_percentages)
 
         status["regular_shareholders"] = regular_shareholders

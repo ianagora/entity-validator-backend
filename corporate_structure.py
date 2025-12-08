@@ -253,6 +253,15 @@ def build_ownership_tree(
                 all_shareholders = regular_shareholders + parent_shareholders
                 extraction_status = shareholder_result.get('extraction_status', 'unknown')
                 
+                # DEBUG: Log what shareholders are being used for this company
+                print(f"{indent}🔍 DEBUG - Shareholders for {company_number} ({company_name}):")
+                print(f"{indent}   Regular: {len(regular_shareholders)}, Parent: {len(parent_shareholders)}")
+                print(f"{indent}   Extraction status: {extraction_status}")
+                if all_shareholders:
+                    print(f"{indent}   📋 Final shareholders list:")
+                    for idx, sh in enumerate(all_shareholders, 1):
+                        print(f"{indent}      {idx}. {sh.get('name', 'N/A')} - {sh.get('shares_held', 'N/A')} shares ({sh.get('percentage', 0)}%)")
+                
                 # If no shareholders found in filings, fall back to PSC register
                 if len(all_shareholders) == 0:
                     print(f"{indent}📊 No shareholders in filings, trying PSC fallback...")
