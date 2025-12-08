@@ -1654,7 +1654,7 @@ def enrich_one(item_id: int):
                         company_number, 
                         company_name,
                         depth=0,
-                        max_depth=3,  # Limit to 3 layers deep (prevents excessive API calls)
+                        max_depth=6,  # Increased to 6 layers to capture full ownership chains
                         visited=None,
                         initial_shareholders=all_shareholders  # Pass PSC or filing-extracted shareholders
                     )
@@ -2812,7 +2812,7 @@ def test_ownership_tree(item_id: int):
             company_number,
             company_name,
             depth=0,
-            max_depth=3,
+            max_depth=6,  # Increased to 6 layers to capture full ownership chains
             visited=None,
             initial_shareholders=all_shareholders
         )
