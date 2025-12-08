@@ -1516,176 +1516,192 @@ def enrich_one(item_id: int):
         ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
         bundle = get_company_bundle(company_number)
 
-        # Add CS01 filings and documents to the bundle
-        try:
-            cs01_filings = get_cs01_filings_for_company(company_number)
-            bundle["cs01_filings"] = cs01_filings
-
-            # Download CS01 PDFs if available
-            cs01_documents = []
-            for filing in cs01_filings:
-                doc_id = filing.get("document_id")
-                if doc_id:
-                    try:
-                        # Get document metadata
-                        doc_metadata = get_document_metadata(doc_id)
-                        filing["document_metadata"] = doc_metadata
-
-                        # Download PDF content
-                        pdf_content = download_cs01_pdf(doc_id)
-                        pdf_filename = f"cs01_{company_number}_{filing['transaction_id']}_{ts}.pdf"
-                        pdf_path = os.path.join(out_dir, pdf_filename)
-
-                        with open(pdf_path, "wb") as f:
-                            f.write(pdf_content)
-
-                        filing["pdf_path"] = pdf_path
-                        filing["pdf_filename"] = pdf_filename
-                        cs01_documents.append(filing)
-
-                    except Exception as e:
-                        print(f"[enrich_one] Failed to download CS01 PDF {doc_id}: {e}")
-                        continue
-
-            bundle["cs01_documents"] = cs01_documents
-
-        except Exception as e:
-            print(f"[enrich_one] Failed to get CS01 filings for {company_number}: {e}")
+        # Check company type - companies limited by guarantee don't have share capital
+        # so we skip CS01/IN01/AR01 extraction for them
+        profile = bundle.get("profile", {})
+        company_type = (profile.get("type") or "").lower()
+        is_company_limited_by_guarantee = "guarant" in company_type
+        
+        if is_company_limited_by_guarantee:
+            print(f"[enrich_one] Company type is '{profile.get('type')}' - skipping CS01/shareholder extraction (no share capital)")
             bundle["cs01_filings"] = []
             bundle["cs01_documents"] = []
-
-        # Extract shareholder information using intelligent CS01 -> AR01 fallback
-        shareholders_status = None
-        try:
-            print(f"[enrich_one] Extracting shareholder information for {company_number}...")
-            shareholder_result = extract_shareholders_for_company(company_number)
-            bundle["regular_shareholders"] = shareholder_result.get("regular_shareholders", [])
-            bundle["parent_shareholders"] = shareholder_result.get("parent_shareholders", [])
-            bundle["total_shares"] = shareholder_result.get("total_shares", 0)
-            bundle["shareholders_status"] = shareholder_result.get("extraction_status", "")
-            shareholders_status = shareholder_result
-            print(f"[enrich_one] Shareholder extraction status: {shareholder_result.get('extraction_status')}")
-            total_extracted = len(shareholder_result.get("regular_shareholders", [])) + len(shareholder_result.get("parent_shareholders", []))
-            
-            # If no shareholders found in filings, try PSC data as fallback
-            if total_extracted == 0:
-                print(f"[enrich_one] No shareholders in filings, checking PSC register...")
-                try:
-                    psc_data = bundle.get("pscs", {})
-                    if psc_data and psc_data.get("items"):
-                        print(f"[enrich_one] Found {len(psc_data['items'])} PSCs, converting to shareholders...")
-                        psc_shareholders = []
-                        
-                        for psc in psc_data['items']:
-                            psc_name = psc.get("name", "Unknown")
-                            psc_kind = psc.get("kind", "")
-                            natures = psc.get("natures_of_control", [])
-                            
-                            # Determine if it's a company or individual
-                            is_company = "corporate" in psc_kind or "legal" in psc_kind
-                            
-                            # Extract ownership percentage from PSC natures
-                            # PSC register provides bands, not exact percentages
-                            percentage = None
-                            percentage_band = None
-                            
-                            # Look for ownership-of-shares first (most accurate)
-                            if any("ownership-of-shares-75-to-100" in n for n in natures):
-                                percentage_band = "75-100%"
-                                percentage = 87.5  # Midpoint for sorting/calculations only
-                            elif any("ownership-of-shares-50-to-75" in n for n in natures):
-                                percentage_band = "50-75%"
-                                percentage = 62.5
-                            elif any("ownership-of-shares-25-to-50" in n for n in natures):
-                                percentage_band = "25-50%"
-                                percentage = 37.5
-                            # Fallback to voting rights if no ownership specified
-                            elif any("voting-rights-75-to-100" in n for n in natures):
-                                percentage_band = "75-100% (voting rights)"
-                                percentage = 87.5
-                            elif any("voting-rights-50-to-75" in n for n in natures):
-                                percentage_band = "50-75% (voting rights)"
-                                percentage = 62.5
-                            elif any("voting-rights-25-to-50" in n for n in natures):
-                                percentage_band = "25-50% (voting rights)"
-                                percentage = 37.5
-                            else:
-                                percentage_band = "Unknown"
-                                percentage = 0
-                            
-                            shareholder = {
-                                "name": psc_name,
-                                "shares_held": "Unknown (from PSC)",
-                                "percentage": percentage,
-                                "percentage_band": percentage_band,  # Show the actual band
-                                "share_class": "Ordinary",
-                                "source": "PSC Register",
-                                "psc_natures": natures  # Include raw natures for transparency
-                            }
-                            
-                            psc_shareholders.append(shareholder)
-                        
-                        # Separate into regular and parent companies
-                        from shareholder_information import identify_parent_companies
-                        regular, parent = identify_parent_companies(psc_shareholders)
-                        
-                        bundle["regular_shareholders"] = regular
-                        bundle["parent_shareholders"] = parent
-                        bundle["shareholders_status"] = "found_via_psc"
-                        
-                        total_extracted = len(psc_shareholders)
-                        print(f"[enrich_one] ✅ Converted {total_extracted} PSCs to shareholders")
-                        
-                except Exception as psc_error:
-                    print(f"[enrich_one] ⚠️  Failed to convert PSC data: {psc_error}")
-            
-            if total_extracted > 0:
-                print(f"[enrich_one] Successfully extracted {total_extracted} shareholders")
-                
-                # Build recursive corporate ownership tree
-                try:
-                    print(f"[enrich_one] Building corporate ownership tree...")
-                    company_name = bundle.get("profile", {}).get("company_name", "Unknown")
-                    
-                    # Combine regular and parent shareholders for tree building
-                    all_shareholders = bundle.get("regular_shareholders", []) + bundle.get("parent_shareholders", [])
-                    
-                    print(f"[enrich_one] DEBUG: Passing {len(all_shareholders)} shareholders to tree builder")
-                    print(f"[enrich_one] DEBUG: Shareholders: {[sh.get('name') for sh in all_shareholders]}")
-                    
-                    ownership_tree = build_ownership_tree(
-                        company_number, 
-                        company_name,
-                        depth=0,
-                        max_depth=50,  # Effectively unlimited - will recurse until end of ownership chain (circular refs prevented by visited set)
-                        visited=None,
-                        initial_shareholders=all_shareholders  # Pass PSC or filing-extracted shareholders
-                    )
-                    
-                    print(f"[enrich_one] DEBUG: Tree returned with {len(ownership_tree.get('shareholders', []))} shareholders")
-                    
-                    bundle["ownership_tree"] = ownership_tree
-                    
-                    # Also create flattened view for easier display
-                    flattened_chains = flatten_ownership_tree(ownership_tree)
-                    bundle["ownership_chains"] = flattened_chains
-                    
-                    print(f"[enrich_one] ✅ Built ownership tree with {len(flattened_chains)} ultimate ownership chains")
-                except Exception as tree_error:
-                    import traceback
-                    print(f"[enrich_one] ⚠️  Failed to build ownership tree: {tree_error}")
-                    print(f"[enrich_one] Traceback: {traceback.format_exc()}")
-                    bundle["ownership_tree"] = None
-                    bundle["ownership_chains"] = []
-                    
-        except Exception as e:
-            print(f"[enrich_one] Failed to extract shareholders for {company_number}: {e}")
             bundle["regular_shareholders"] = []
             bundle["parent_shareholders"] = []
             bundle["total_shares"] = 0
-            bundle["shareholders_status"] = "extraction_error"
-            bundle["ownership_tree"] = None
-            bundle["ownership_chains"] = []
+            bundle["shareholders_status"] = "skipped_company_limited_by_guarantee"
+            shareholders_status = {"extraction_status": "skipped_company_limited_by_guarantee"}
+        else:
+            # Add CS01 filings and documents to the bundle
+            try:
+                cs01_filings = get_cs01_filings_for_company(company_number)
+                bundle["cs01_filings"] = cs01_filings
+
+                # Download CS01 PDFs if available
+                cs01_documents = []
+                for filing in cs01_filings:
+                    doc_id = filing.get("document_id")
+                    if doc_id:
+                        try:
+                            # Get document metadata
+                            doc_metadata = get_document_metadata(doc_id)
+                            filing["document_metadata"] = doc_metadata
+
+                            # Download PDF content
+                            pdf_content = download_cs01_pdf(doc_id)
+                            pdf_filename = f"cs01_{company_number}_{filing['transaction_id']}_{ts}.pdf"
+                            pdf_path = os.path.join(out_dir, pdf_filename)
+
+                            with open(pdf_path, "wb") as f:
+                                f.write(pdf_content)
+
+                            filing["pdf_path"] = pdf_path
+                            filing["pdf_filename"] = pdf_filename
+                            cs01_documents.append(filing)
+
+                        except Exception as e:
+                            print(f"[enrich_one] Failed to download CS01 PDF {doc_id}: {e}")
+                            continue
+
+                    bundle["cs01_documents"] = cs01_documents
+
+            except Exception as e:
+                print(f"[enrich_one] Failed to get CS01 filings for {company_number}: {e}")
+                bundle["cs01_filings"] = []
+                bundle["cs01_documents"] = []
+
+            # Extract shareholder information using intelligent CS01 -> AR01 fallback
+            shareholders_status = None
+            try:
+                print(f"[enrich_one] Extracting shareholder information for {company_number}...")
+                shareholder_result = extract_shareholders_for_company(company_number)
+                bundle["regular_shareholders"] = shareholder_result.get("regular_shareholders", [])
+                bundle["parent_shareholders"] = shareholder_result.get("parent_shareholders", [])
+                bundle["total_shares"] = shareholder_result.get("total_shares", 0)
+                bundle["shareholders_status"] = shareholder_result.get("extraction_status", "")
+                shareholders_status = shareholder_result
+                print(f"[enrich_one] Shareholder extraction status: {shareholder_result.get('extraction_status')}")
+                total_extracted = len(shareholder_result.get("regular_shareholders", [])) + len(shareholder_result.get("parent_shareholders", []))
+            
+                # If no shareholders found in filings, try PSC data as fallback
+                if total_extracted == 0:
+                    print(f"[enrich_one] No shareholders in filings, checking PSC register...")
+                    try:
+                        psc_data = bundle.get("pscs", {})
+                        if psc_data and psc_data.get("items"):
+                            print(f"[enrich_one] Found {len(psc_data['items'])} PSCs, converting to shareholders...")
+                            psc_shareholders = []
+                        
+                            for psc in psc_data['items']:
+                                psc_name = psc.get("name", "Unknown")
+                                psc_kind = psc.get("kind", "")
+                                natures = psc.get("natures_of_control", [])
+                            
+                                # Determine if it's a company or individual
+                                is_company = "corporate" in psc_kind or "legal" in psc_kind
+                            
+                                # Extract ownership percentage from PSC natures
+                                # PSC register provides bands, not exact percentages
+                                percentage = None
+                                percentage_band = None
+                            
+                                # Look for ownership-of-shares first (most accurate)
+                                if any("ownership-of-shares-75-to-100" in n for n in natures):
+                                    percentage_band = "75-100%"
+                                    percentage = 87.5  # Midpoint for sorting/calculations only
+                                elif any("ownership-of-shares-50-to-75" in n for n in natures):
+                                    percentage_band = "50-75%"
+                                    percentage = 62.5
+                                elif any("ownership-of-shares-25-to-50" in n for n in natures):
+                                    percentage_band = "25-50%"
+                                    percentage = 37.5
+                                # Fallback to voting rights if no ownership specified
+                                elif any("voting-rights-75-to-100" in n for n in natures):
+                                    percentage_band = "75-100% (voting rights)"
+                                    percentage = 87.5
+                                elif any("voting-rights-50-to-75" in n for n in natures):
+                                    percentage_band = "50-75% (voting rights)"
+                                    percentage = 62.5
+                                elif any("voting-rights-25-to-50" in n for n in natures):
+                                    percentage_band = "25-50% (voting rights)"
+                                    percentage = 37.5
+                                else:
+                                    percentage_band = "Unknown"
+                                    percentage = 0
+                            
+                                shareholder = {
+                                    "name": psc_name,
+                                    "shares_held": "Unknown (from PSC)",
+                                    "percentage": percentage,
+                                    "percentage_band": percentage_band,  # Show the actual band
+                                    "share_class": "Ordinary",
+                                    "source": "PSC Register",
+                                    "psc_natures": natures  # Include raw natures for transparency
+                                }
+                            
+                                psc_shareholders.append(shareholder)
+                        
+                            # Separate into regular and parent companies
+                            from shareholder_information import identify_parent_companies
+                            regular, parent = identify_parent_companies(psc_shareholders)
+                        
+                            bundle["regular_shareholders"] = regular
+                            bundle["parent_shareholders"] = parent
+                            bundle["shareholders_status"] = "found_via_psc"
+                        
+                            total_extracted = len(psc_shareholders)
+                            print(f"[enrich_one] ✅ Converted {total_extracted} PSCs to shareholders")
+                        
+                    except Exception as psc_error:
+                        print(f"[enrich_one] ⚠️  Failed to convert PSC data: {psc_error}")
+            
+                if total_extracted > 0:
+                    print(f"[enrich_one] Successfully extracted {total_extracted} shareholders")
+                
+                    # Build recursive corporate ownership tree
+                    try:
+                        print(f"[enrich_one] Building corporate ownership tree...")
+                        company_name = bundle.get("profile", {}).get("company_name", "Unknown")
+                    
+                        # Combine regular and parent shareholders for tree building
+                        all_shareholders = bundle.get("regular_shareholders", []) + bundle.get("parent_shareholders", [])
+                    
+                        print(f"[enrich_one] DEBUG: Passing {len(all_shareholders)} shareholders to tree builder")
+                        print(f"[enrich_one] DEBUG: Shareholders: {[sh.get('name') for sh in all_shareholders]}")
+                    
+                        ownership_tree = build_ownership_tree(
+                            company_number, 
+                            company_name,
+                            depth=0,
+                            max_depth=50,  # Effectively unlimited - will recurse until end of ownership chain (circular refs prevented by visited set)
+                            visited=None,
+                            initial_shareholders=all_shareholders  # Pass PSC or filing-extracted shareholders
+                        )
+                    
+                        print(f"[enrich_one] DEBUG: Tree returned with {len(ownership_tree.get('shareholders', []))} shareholders")
+                    
+                        bundle["ownership_tree"] = ownership_tree
+                    
+                        # Also create flattened view for easier display
+                        flattened_chains = flatten_ownership_tree(ownership_tree)
+                        bundle["ownership_chains"] = flattened_chains
+                    
+                        print(f"[enrich_one] ✅ Built ownership tree with {len(flattened_chains)} ultimate ownership chains")
+                    except Exception as tree_error:
+                        import traceback
+                        print(f"[enrich_one] ⚠️  Failed to build ownership tree: {tree_error}")
+                        print(f"[enrich_one] Traceback: {traceback.format_exc()}")
+                        bundle["ownership_tree"] = None
+                        bundle["ownership_chains"] = []
+                    
+            except Exception as e:
+                print(f"[enrich_one] Failed to extract shareholders for {company_number}: {e}")
+                bundle["regular_shareholders"] = []
+                bundle["parent_shareholders"] = []
+                bundle["total_shares"] = 0
+                bundle["shareholders_status"] = "extraction_error"
+                bundle["ownership_tree"] = None
+                bundle["ownership_chains"] = []
 
         json_path = os.path.join(out_dir, f"enriched_{company_number}_{ts}.json")
         xlsx_path = os.path.join(out_dir, f"enriched_{company_number}_{ts}.xlsx")
