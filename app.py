@@ -3173,11 +3173,13 @@ async def api_get_item_details(item_id: int):
         
         # Read ownership tree from database (preferred, survives Railway redeployments)
         ownership_tree = None
-        if item.get("ownership_tree_json"):
-            try:
-                ownership_tree = json.loads(item["ownership_tree_json"])
-            except Exception as e:
-                print(f"[api_get_item_details] Failed to parse ownership_tree_json: {e}")
+        try:
+            # Use dict() to safely access columns that might not exist yet
+            item_dict = dict(item)
+            if item_dict.get("ownership_tree_json"):
+                ownership_tree = json.loads(item_dict["ownership_tree_json"])
+        except Exception as e:
+            print(f"[api_get_item_details] Failed to read ownership_tree_json (column may not exist yet): {e}")
         
         # Fallback to bundle if database doesn't have it
         if not ownership_tree and bundle:
@@ -3216,6 +3218,10 @@ async def api_get_item_details(item_id: int):
         return JSONResponse(content=result)
         
     except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"[api_get_item_details] Error: {e}")
+        print(f"[api_get_item_details] Traceback: {error_details}")
         return JSONResponse(
             content={"error": f"Failed to fetch item details: {str(e)}"},
             status_code=500
