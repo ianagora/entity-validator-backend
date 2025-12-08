@@ -1624,8 +1624,27 @@ def enrich_one(item_id: int):
                         import traceback
                         print(f"[enrich_one] ⚠️  Failed to build ownership tree: {tree_error}")
                         print(f"[enrich_one] Traceback: {traceback.format_exc()}")
-                        bundle["ownership_tree"] = None
+                        
+                        # Fallback: Create a simple tree with just direct shareholders
+                        print(f"[enrich_one] 🔧 Creating fallback tree with direct shareholders only...")
+                        company_name = bundle.get("profile", {}).get("company_name", "Unknown")
+                        bundle["ownership_tree"] = {
+                            "company_number": company_number,
+                            "company_name": company_name,
+                            "shareholders": [
+                                {
+                                    "name": sh.get("name"),
+                                    "shares_held": sh.get("shares_held"),
+                                    "percentage": sh.get("percentage", 0),
+                                    "share_class": sh.get("share_class", ""),
+                                    "is_company": False,  # Assume individual for safety
+                                    "children": []
+                                }
+                                for sh in all_shareholders
+                            ]
+                        }
                         bundle["ownership_chains"] = []
+                        print(f"[enrich_one] ✅ Fallback tree created with {len(all_shareholders)} direct shareholders")
                     
             except Exception as e:
                 print(f"[enrich_one] Failed to extract shareholders for {company_number}: {e}")
@@ -1742,8 +1761,27 @@ def enrich_one(item_id: int):
                             import traceback
                             print(f"[enrich_one] ⚠️  Failed to build ownership tree from PSC: {tree_error}")
                             print(f"[enrich_one] Traceback: {traceback.format_exc()}")
-                            bundle["ownership_tree"] = None
+                            
+                            # Fallback: Create a simple tree with PSC data
+                            print(f"[enrich_one] 🔧 Creating fallback tree from PSC data...")
+                            company_name = bundle.get("profile", {}).get("company_name", "Unknown")
+                            bundle["ownership_tree"] = {
+                                "company_number": company_number,
+                                "company_name": company_name,
+                                "shareholders": [
+                                    {
+                                        "name": sh.get("name"),
+                                        "shares_held": sh.get("shares_held"),
+                                        "percentage": sh.get("percentage", 0),
+                                        "share_class": sh.get("share_class", ""),
+                                        "is_company": "corporate" in sh.get("source", "").lower() or "ltd" in sh.get("name", "").lower(),
+                                        "children": []
+                                    }
+                                    for sh in all_shareholders
+                                ]
+                            }
                             bundle["ownership_chains"] = []
+                            print(f"[enrich_one] ✅ Fallback PSC tree created with {len(all_shareholders)} controllers")
             except Exception as psc_error:
                 print(f"[enrich_one] ⚠️  Failed to convert PSC data: {psc_error}")
                 # Set defaults if PSC processing fails
