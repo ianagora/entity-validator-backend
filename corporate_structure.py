@@ -186,12 +186,18 @@ def build_ownership_tree(
                 all_shareholders = []
                 
                 if psc_data and psc_data.get("items"):
+                    print(f"{indent}🔍 Processing {len(psc_data['items'])} PSCs for guarantee company {company_number}")
                     for psc in psc_data['items']:
+                        psc_name_debug = psc.get("name", "Unknown")
+                        ceased_on = psc.get("ceased_on")
+                        print(f"{indent}   PSC: {psc_name_debug}, ceased_on: {ceased_on}")
+                        
                         # Skip ceased PSCs
-                        if psc.get("ceased_on"):
-                            print(f"{indent}⏭️  Skipping ceased PSC: {psc.get('name')} (ceased: {psc.get('ceased_on')})")
+                        if ceased_on:
+                            print(f"{indent}⏭️  SKIPPING CEASED PSC: {psc_name_debug} (ceased: {ceased_on})")
                             continue
-                            
+                        
+                        print(f"{indent}✅  Adding active PSC: {psc_name_debug}")
                         psc_name = psc.get("name", "Unknown")
                         psc_kind = psc.get("kind", "")
                         natures = psc.get("natures_of_control", [])
@@ -252,13 +258,18 @@ def build_ownership_tree(
                     print(f"{indent}📊 No shareholders in filings, trying PSC fallback...")
                     psc_data = bundle.get("pscs", {})
                     if psc_data and psc_data.get("items"):
-                        print(f"{indent}📊 Found {len(psc_data['items'])} PSCs, converting to shareholders...")
+                        print(f"{indent}📊 Found {len(psc_data['items'])} PSCs for {company_number}, converting to shareholders...")
                         for psc in psc_data['items']:
+                            psc_name_debug = psc.get("name", "Unknown")
+                            ceased_on = psc.get("ceased_on")
+                            print(f"{indent}   PSC: {psc_name_debug}, ceased_on: {ceased_on}")
+                            
                             # Skip ceased PSCs
-                            if psc.get("ceased_on"):
-                                print(f"{indent}⏭️  Skipping ceased PSC: {psc.get('name')} (ceased: {psc.get('ceased_on')})")
+                            if ceased_on:
+                                print(f"{indent}⏭️  SKIPPING CEASED PSC: {psc_name_debug} (ceased: {ceased_on})")
                                 continue
-                                
+                            
+                            print(f"{indent}✅  Adding active PSC: {psc_name_debug}")
                             psc_name = psc.get("name", "Unknown")
                             psc_kind = psc.get("kind", "")
                             natures = psc.get("natures_of_control", [])
