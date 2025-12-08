@@ -167,10 +167,17 @@ def build_ownership_tree(
             # Extract shareholders normally for child companies
             # First check if this is a company limited by guarantee
             from resolver import get_company_bundle
-            bundle = get_company_bundle(company_number)
-            profile = bundle.get("profile", {})
-            company_type = (profile.get("type") or "").lower()
-            is_guarantee = "guarant" in company_type
+            
+            try:
+                bundle = get_company_bundle(company_number)
+                profile = bundle.get("profile", {})
+                company_type = (profile.get("type") or "").lower()
+                is_guarantee = "guarant" in company_type
+            except Exception as bundle_error:
+                print(f"{indent}⚠️  Failed to get company bundle: {bundle_error}")
+                # Assume it's a normal company if we can't fetch profile
+                bundle = {"profile": {}, "pscs": {}}
+                is_guarantee = False
             
             if is_guarantee:
                 # Use PSC data for companies limited by guarantee
