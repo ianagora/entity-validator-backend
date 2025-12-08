@@ -114,6 +114,20 @@ CRITICAL Rules:
 - The shareholder name is the legal entity that holds the shares, not the trust they represent
 - Example: If you see "Name: S W J ROSE" followed by "S W ROSE RE W C ROSE DISCRETIONARY TRUST", extract only "S W J ROSE"
 - Example: If you see "Name: GREENE & GREENE TRUSTEES LIMITED" followed by "SWJ ROSE RE. WC ROSE SETTLEMENT", extract only "GREENE & GREENE TRUSTEES LIMITED"
+
+IMPORTANT - Multiple Shareholders Per Shareholding:
+- Sometimes a SINGLE shareholding line lists MULTIPLE separate shareholders separated by commas or ampersands
+- Example: "Name: ANDREW P COOPER LIMITED, WAYNE PERRIN LIMITED, STUART D HUGHES LIMITED & JONATHAN MATHERS LIMITED"
+- These are SEPARATE shareholders who should be extracted as INDIVIDUAL entries
+- When splitting, you MUST preserve the exact company names (including "LIMITED", "LTD", "PLC", etc.)
+- For shares_held: The total shares for that shareholding apply to ALL shareholders listed together
+- When there's no way to determine individual shareholdings, use the TOTAL shares for EACH shareholder
+- This allows downstream processing to identify and enrich each company separately
+- Look for separators: commas (,), ampersands (&), and "AND"
+- Common pattern: "COMPANY A, COMPANY B, COMPANY C & COMPANY D" should become 4 separate shareholder entries
+- Each entry should have: same shares_held value, same share_class, but different name
+
+Other Rules:
 - For transfers array: include any transfer information found (amount and date), or leave as empty array [] if no transfers mentioned
 - shares_held should be a number (integer) - this is the number of shares held AS AT THE DATE OF THIS CONFIRMATION STATEMENT
 - If shareholding shows "0 ORDINARY shares held as at the date of this confirmation statement", set shares_held to 0
