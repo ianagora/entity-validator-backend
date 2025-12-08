@@ -222,6 +222,19 @@ def process_filing_type(company_number, filing_type):
             MAX_FILINGS_TO_CHECK = 7  # Balanced: enough to find older holdings companies, but not too slow
             filings_to_process = filings[:MAX_FILINGS_TO_CHECK]
             
+            # 🐛 DEBUG: Log filings being checked to verify sorting
+            print(f"   📋 DEBUG: First {min(len(filings), MAX_FILINGS_TO_CHECK)} filings after sorting:")
+            for idx, f in enumerate(filings[:MAX_FILINGS_TO_CHECK]):
+                desc = f.get('description', 'NO DESCRIPTION')
+                date = f.get('date', 'NO DATE')
+                print(f"      {idx+1}. {date} - {desc}")
+            if len(filings) > MAX_FILINGS_TO_CHECK:
+                print(f"   ⚠️ {len(filings) - MAX_FILINGS_TO_CHECK} older filings NOT checked:")
+                for idx, f in enumerate(filings[MAX_FILINGS_TO_CHECK:]):
+                    desc = f.get('description', 'NO DESCRIPTION')
+                    date = f.get('date', 'NO DATE')
+                    print(f"      SKIPPED {idx+MAX_FILINGS_TO_CHECK+1}. {date} - {desc}")
+            
             if len(filings) > MAX_FILINGS_TO_CHECK:
                 print(f"   Found {len(filings)} filings, limiting to {MAX_FILINGS_TO_CHECK} most recent (prioritized by 'with updates' first)")
 
