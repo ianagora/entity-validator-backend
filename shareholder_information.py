@@ -219,7 +219,7 @@ def process_filing_type(company_number, filing_type):
             # Limit filings to check, but use a higher limit for finding corporate shareholders
             # The optimization (commit 22ec091) sorts "with updates" first, so we're more likely to find meaningful data early
             # However, for corporate shareholders (holdings companies), we may need to check older filings (e.g., 2017)
-            MAX_FILINGS_TO_CHECK = 10  # Increased from 5 to ensure we check older filings with holdings companies
+            MAX_FILINGS_TO_CHECK = 7  # Balanced: enough to find older holdings companies, but not too slow
             filings_to_process = filings[:MAX_FILINGS_TO_CHECK]
             
             if len(filings) > MAX_FILINGS_TO_CHECK:
@@ -288,6 +288,7 @@ def process_filing_type(company_number, filing_type):
                                 shareholders = extracted_shareholders
                                 has_parent_shareholders = True
                                 print(f"   🏢 Found corporate shareholders - will use this filing and stop processing")
+                                break  # Early exit - no need to check more filings
                             else:
                                 # Only individuals - save as backup but keep looking
                                 if not individual_shareholders_backup:
