@@ -1484,6 +1484,9 @@ def bundle_to_xlsx(bundle: dict, xlsx_path: str):
 # ---------------- Companies House enrichment ----------------
 def enrich_one(item_id: int):
     """Fetch CH bundle, write artifacts, and update status with simple lock retries."""
+    import time
+    start_time = time.time()
+    
     try:
         attempts = 0
         while True:
@@ -1690,11 +1693,45 @@ def enrich_one(item_id: int):
             json.dump(bundle, f, ensure_ascii=False, indent=2)
         bundle_to_xlsx(bundle, xlsx_path)
 
+        # Calculate enrichment metrics
+        enrichment_duration = time.time() - start_time
+        
+        # Calculate tree depth and entity count
+        def calculate_tree_metrics(node, current_depth=0):
+            if not node:
+                return (0, 0)
+            max_depth = current_depth
+            entity_count = 1 if node.get('company_number') or node.get('is_company') else 0
+            
+            for shareholder in node.get('shareholders', []):
+                child_depth, child_count = calculate_tree_metrics(shareholder, current_depth + 1)
+                max_depth = max(max_depth, child_depth)
+                entity_count += child_count
+                
+            for child in node.get('children', []):
+                child_depth, child_count = calculate_tree_metrics(child, current_depth + 1)
+                max_depth = max(max_depth, child_depth)
+                entity_count += child_count
+                
+            return (max_depth, entity_count)
+        
+        tree_depth, total_entities = calculate_tree_metrics(bundle.get('ownership_tree'))
+        
+        enrichment_metadata = {
+            "enrichment_duration_seconds": round(enrichment_duration, 2),
+            "tree_depth": tree_depth,
+            "total_entities_in_tree": total_entities,
+            "completed_at": time.strftime("%Y-%m-%d %H:%M:%S")
+        }
+        
+        print(f"[enrich_one] Completed in {enrichment_duration:.2f}s - Tree depth: {tree_depth}, Entities: {total_entities}")
+        
         # Serialize shareholders data for database storage (preserve structure)
         shareholders_data = {
             "regular_shareholders": bundle.get("regular_shareholders", []),
             "parent_shareholders": bundle.get("parent_shareholders", []),
-            "total_shares": bundle.get("total_shares", 0)
+            "total_shares": bundle.get("total_shares", 0),
+            "enrichment_metadata": enrichment_metadata
         }
         shareholders_json = json.dumps(shareholders_data, ensure_ascii=False)
         shareholders_status = bundle.get("shareholders_status", "")
@@ -2942,6 +2979,178 @@ async def api_get_item_details(item_id: int):
     except Exception as e:
         return JSONResponse(
             content={"error": f"Failed to fetch item details: {str(e)}"},
+            status_code=500
+        )
+
+@app.get("/api/item/{item_id}/screening-export.csv")
+async def export_screening_list_csv(item_id: int):
+    """Export KYC/AML screening list as CSV for ingestion into screening engines"""
+    try:
+        from fastapi.responses import StreamingResponse
+        import io
+        import csv
+        
+        with db() as conn:
+            item = conn.execute("SELECT * FROM items WHERE id=?", (item_id,)).fetchone()
+            
+        if not item:
+            return JSONResponse(content={"error": "Item not found"}, status_code=404)
+        
+        # Get shareholders and bundle
+        shareholders = []
+        if item["shareholders_json"]:
+            try:
+                shareholders_data = json.loads(item["shareholders_json"])
+                if isinstance(shareholders_data, dict):
+                    shareholders = shareholders_data.get("regular_shareholders", []) + shareholders_data.get("parent_shareholders", [])
+                elif isinstance(shareholders_data, list):
+                    shareholders = shareholders_data
+            except Exception:
+                pass
+        
+        bundle = {}
+        if item["enrich_json_path"]:
+            try:
+                with open(item["enrich_json_path"], 'r') as f:
+                    bundle = json.load(f)
+            except Exception:
+                pass
+        
+        # Build screening list
+        item_dict = dict(item) if item else {}
+        screening_list = build_screening_list(bundle, shareholders, item_dict)
+        
+        # Create CSV in memory
+        output = io.StringIO()
+        writer = csv.writer(output)
+        
+        # Header
+        writer.writerow([
+            'Category',
+            'Name',
+            'Type',
+            'Role',
+            'Company Number',
+            'Shareholding',
+            'Date of Birth',
+            'Nationality',
+            'Appointed On',
+            'Description',
+            'Notes'
+        ])
+        
+        # Flatten screening list into CSV rows
+        all_entries = []
+        
+        # Entity
+        for entity in screening_list.get('entity', []):
+            all_entries.append({
+                'Category': 'Entity',
+                'Name': entity.get('name'),
+                'Type': entity.get('type'),
+                'Role': 'Subject Entity',
+                'Company Number': entity.get('company_number'),
+                'Shareholding': '',
+                'Date of Birth': '',
+                'Nationality': '',
+                'Appointed On': '',
+                'Description': entity.get('category'),
+                'Notes': f"Status: {entity.get('status')}"
+            })
+        
+        # Governance & Control
+        for person in screening_list.get('governance_and_control', []):
+            all_entries.append({
+                'Category': 'Governance & Control',
+                'Name': person.get('name'),
+                'Type': 'Corporate Entity' if person.get('kind') == 'corporate-entity-person-with-significant-control' else 'Individual',
+                'Role': person.get('role', '').title(),
+                'Company Number': person.get('company_number', ''),
+                'Shareholding': '',
+                'Date of Birth': person.get('dob', ''),
+                'Nationality': person.get('nationality', ''),
+                'Appointed On': person.get('appointed_on', ''),
+                'Description': person.get('description'),
+                'Notes': ''
+            })
+        
+        # Ownership Chain
+        for owner in screening_list.get('ownership_chain', []):
+            all_entries.append({
+                'Category': 'Ownership Chain',
+                'Name': owner.get('name'),
+                'Type': 'Company' if owner.get('is_company') else 'Individual',
+                'Role': owner.get('role', 'Shareholder'),
+                'Company Number': owner.get('company_number', ''),
+                'Shareholding': owner.get('shareholding', ''),
+                'Date of Birth': '',
+                'Nationality': '',
+                'Appointed On': '',
+                'Description': owner.get('description'),
+                'Notes': f"Depth: {owner.get('depth', 0)}, Shares: {owner.get('shares_held', 'Unknown')}"
+            })
+        
+        # UBOs
+        for ubo in screening_list.get('ubos', []):
+            all_entries.append({
+                'Category': 'UBO',
+                'Name': ubo.get('name'),
+                'Type': 'Company' if ubo.get('is_company') else 'Individual',
+                'Role': 'Ultimate Beneficial Owner',
+                'Company Number': ubo.get('company_number', ''),
+                'Shareholding': ubo.get('indirect_ownership', ''),
+                'Date of Birth': '',
+                'Nationality': '',
+                'Appointed On': '',
+                'Description': ubo.get('description'),
+                'Notes': f"Chain: {' → '.join(ubo.get('chain', []))}"
+            })
+        
+        # Trusts
+        for trust in screening_list.get('trusts', []):
+            all_entries.append({
+                'Category': 'Trust',
+                'Name': trust.get('name'),
+                'Type': 'Trust Entity',
+                'Role': trust.get('role', 'Trustee'),
+                'Company Number': trust.get('company_number', ''),
+                'Shareholding': trust.get('shareholding', ''),
+                'Date of Birth': '',
+                'Nationality': '',
+                'Appointed On': '',
+                'Description': trust.get('description'),
+                'Notes': trust.get('note', '')
+            })
+        
+        # Write rows
+        for entry in all_entries:
+            writer.writerow([
+                entry.get('Category', ''),
+                entry.get('Name', ''),
+                entry.get('Type', ''),
+                entry.get('Role', ''),
+                entry.get('Company Number', ''),
+                entry.get('Shareholding', ''),
+                entry.get('Date of Birth', ''),
+                entry.get('Nationality', ''),
+                entry.get('Appointed On', ''),
+                entry.get('Description', ''),
+                entry.get('Notes', '')
+            ])
+        
+        # Return CSV
+        output.seek(0)
+        return StreamingResponse(
+            iter([output.getvalue()]),
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": f"attachment; filename=screening_list_{item_id}_{item['company_number']}.csv"
+            }
+        )
+        
+    except Exception as e:
+        return JSONResponse(
+            content={"error": f"Failed to export screening list: {str(e)}"},
             status_code=500
         )
 
