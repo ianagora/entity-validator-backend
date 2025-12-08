@@ -217,9 +217,17 @@ def process_filing_type(company_number, filing_type):
                 print(f"   Found {len(filings)} filings, limiting to {MAX_FILINGS_TO_CHECK} most recent")
 
             # Process filings in order (most recent first) until we find shareholders
+            # IMPORTANT: We prefer filings with corporate/parent shareholders over individual shareholders
+            # This ensures we find holdings companies even if the most recent filing shows individuals
+            has_parent_shareholders = False
+            
             for i, filing in enumerate(filings_to_process):
-                if shareholders:  # If we already found shareholders, stop
+                # If we already found shareholders with parent companies, we're done
+                if has_parent_shareholders:
                     break
+                
+                # If we found individual shareholders but no parent companies, keep looking
+                # (corporate shareholders are more useful for ownership trees)
 
                 doc_id = filing.get('document_id')
                 filing_date = filing.get('date', 'unknown')
@@ -254,6 +262,19 @@ def process_filing_type(company_number, filing_type):
 
                         if shareholders:
                             print(f"   ✅ Successfully extracted {len(shareholders)} shareholders from {filing_type} ({filing_date})")
+                            
+                            # Check if we found parent/corporate shareholders (companies, not individuals)
+                            # Look for company suffixes like LIMITED, LTD, PLC, LLP, etc.
+                            parent_suffixes = ['limited', 'ltd', 'holdings', 'plc', 'llp', 'lp', 'trust']
+                            for sh in shareholders:
+                                name = sh.get('name', '').lower()
+                                if any(suffix in name for suffix in parent_suffixes):
+                                    has_parent_shareholders = True
+                                    print(f"   🏢 Found corporate shareholder: {sh.get('name', 'N/A')} - will use this filing")
+                                    break
+                            
+                            if not has_parent_shareholders:
+                                print(f"   ⚠️ Only individual shareholders found in this filing, will check older filings for corporate shareholders...")
                         else:
                             print(f"   No shareholders found in this {filing_type} filing, trying next one...")
 
