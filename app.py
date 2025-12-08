@@ -943,6 +943,7 @@ def init_db():
             enrich_xlsx_path TEXT,
             shareholders_json TEXT,
             shareholders_status TEXT,
+            ownership_tree_json TEXT,
             out_dir TEXT,
             created_at TEXT NOT NULL,
             resolved_registry TEXT,
@@ -978,6 +979,7 @@ def init_db():
             ("enrich_status", "TEXT"),
             ("enrich_json_path", "TEXT"),
             ("enrich_xlsx_path", "TEXT"),
+            ("ownership_tree_json", "TEXT"),
             ("out_dir", "TEXT"),
         ]:
             if col.lower() not in existing_cols_lower:
@@ -1840,11 +1842,14 @@ def enrich_one(item_id: int):
         }
         shareholders_json = json.dumps(shareholders_data, ensure_ascii=False)
         shareholders_status = bundle.get("shareholders_status", "")
+        
+        # Serialize ownership tree for database storage (to survive Railway redeployments)
+        ownership_tree_json = json.dumps(bundle.get("ownership_tree"), ensure_ascii=False) if bundle.get("ownership_tree") else None
 
         with db() as conn:
             conn.execute(
-                "UPDATE items SET enrich_status='done', enrich_json_path=?, enrich_xlsx_path=?, shareholders_json=?, shareholders_status=? WHERE id=?",
-                (json_path, xlsx_path, shareholders_json, shareholders_status, item_id),
+                "UPDATE items SET enrich_status='done', enrich_json_path=?, enrich_xlsx_path=?, shareholders_json=?, shareholders_status=?, ownership_tree_json=? WHERE id=?",
+                (json_path, xlsx_path, shareholders_json, shareholders_status, ownership_tree_json, item_id),
             )
 
     except Exception as e:
@@ -3166,6 +3171,18 @@ async def api_get_item_details(item_id: int):
             except Exception:
                 pass
         
+        # Read ownership tree from database (preferred, survives Railway redeployments)
+        ownership_tree = None
+        if item.get("ownership_tree_json"):
+            try:
+                ownership_tree = json.loads(item["ownership_tree_json"])
+            except Exception as e:
+                print(f"[api_get_item_details] Failed to parse ownership_tree_json: {e}")
+        
+        # Fallback to bundle if database doesn't have it
+        if not ownership_tree and bundle:
+            ownership_tree = bundle.get("ownership_tree")
+        
         # Build KYC/AML screening list
         # Convert sqlite3.Row to dict for screening list function
         item_dict = dict(item) if item else {}
@@ -3186,7 +3203,7 @@ async def api_get_item_details(item_id: int):
             "created_at": item["created_at"],
             "shareholders": shareholders,
             "shareholders_status": item["shareholders_status"],
-            "ownership_tree": bundle.get("ownership_tree", None),
+            "ownership_tree": ownership_tree,
             "ownership_chains": bundle.get("ownership_chains", []),
             "profile": bundle.get("profile", {}),
             "officers": bundle.get("officers", {}),
