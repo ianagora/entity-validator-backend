@@ -1647,6 +1647,11 @@ def enrich_one(item_id: int):
                     psc_shareholders = []
                     
                     for psc in psc_data['items']:
+                        # Skip ceased PSCs
+                        if psc.get("ceased_on"):
+                            print(f"[enrich_one] ⏭️  Skipping ceased PSC: {psc.get('name')} (ceased: {psc.get('ceased_on')})")
+                            continue
+                            
                         psc_name = psc.get("name", "Unknown")
                         psc_kind = psc.get("kind", "")
                         natures = psc.get("natures_of_control", [])

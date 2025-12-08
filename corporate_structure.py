@@ -180,6 +180,11 @@ def build_ownership_tree(
                 
                 if psc_data and psc_data.get("items"):
                     for psc in psc_data['items']:
+                        # Skip ceased PSCs
+                        if psc.get("ceased_on"):
+                            print(f"{indent}⏭️  Skipping ceased PSC: {psc.get('name')} (ceased: {psc.get('ceased_on')})")
+                            continue
+                            
                         psc_name = psc.get("name", "Unknown")
                         psc_kind = psc.get("kind", "")
                         natures = psc.get("natures_of_control", [])
@@ -242,6 +247,11 @@ def build_ownership_tree(
                     if psc_data and psc_data.get("items"):
                         print(f"{indent}📊 Found {len(psc_data['items'])} PSCs, converting to shareholders...")
                         for psc in psc_data['items']:
+                            # Skip ceased PSCs
+                            if psc.get("ceased_on"):
+                                print(f"{indent}⏭️  Skipping ceased PSC: {psc.get('name')} (ceased: {psc.get('ceased_on')})")
+                                continue
+                                
                             psc_name = psc.get("name", "Unknown")
                             psc_kind = psc.get("kind", "")
                             natures = psc.get("natures_of_control", [])
