@@ -235,10 +235,58 @@ def build_ownership_tree(
                 all_shareholders = regular_shareholders + parent_shareholders
                 extraction_status = shareholder_result.get('extraction_status', 'unknown')
                 
+                # If no shareholders found in filings, fall back to PSC register
+                if len(all_shareholders) == 0:
+                    print(f"{indent}📊 No shareholders in filings, trying PSC fallback...")
+                    psc_data = bundle.get("pscs", {})
+                    if psc_data and psc_data.get("items"):
+                        print(f"{indent}📊 Found {len(psc_data['items'])} PSCs, converting to shareholders...")
+                        for psc in psc_data['items']:
+                            psc_name = psc.get("name", "Unknown")
+                            psc_kind = psc.get("kind", "")
+                            natures = psc.get("natures_of_control", [])
+                            
+                            # Extract control percentage
+                            percentage = 50  # Default for PSCs
+                            percentage_band = "PSC Register"
+                            
+                            if any("ownership-of-shares-75-to-100" in n for n in natures):
+                                percentage = 87.5
+                                percentage_band = "75-100%"
+                            elif any("ownership-of-shares-50-to-75" in n for n in natures):
+                                percentage = 62.5
+                                percentage_band = "50-75%"
+                            elif any("ownership-of-shares-25-to-50" in n for n in natures):
+                                percentage = 37.5
+                                percentage_band = "25-50%"
+                            elif any("voting-rights-75-to-100" in n for n in natures):
+                                percentage = 87.5
+                                percentage_band = "75-100% (voting)"
+                            elif any("right-to-appoint-and-remove-directors" in n for n in natures):
+                                percentage = 100
+                                percentage_band = "Control (directors)"
+                            
+                            shareholder = {
+                                "name": psc_name,
+                                "shares_held": "Unknown (PSC)",
+                                "percentage": percentage,
+                                "percentage_band": percentage_band,
+                                "share_class": "Ordinary",
+                                "source": "PSC Register",
+                                "psc_natures": natures
+                            }
+                            all_shareholders.append(shareholder)
+                        
+                        regular_shareholders = all_shareholders
+                        parent_shareholders = []
+                        extraction_status = "found_via_psc_fallback"
+                        print(f"{indent}✅ PSC fallback: {len(all_shareholders)} controllers found")
+                
                 print(f"{indent}📊 Extraction status: {extraction_status}")
                 print(f"{indent}👥 Total shareholders: {len(all_shareholders)}")
-                print(f"{indent}   - Regular: {len(regular_shareholders)}")
-                print(f"{indent}   - Corporate: {len(parent_shareholders)}")
+                if len(all_shareholders) > 0:
+                    print(f"{indent}   - Regular: {len(regular_shareholders)}")
+                    print(f"{indent}   - Corporate: {len(parent_shareholders)}")
         
         # Process each shareholder
         processed_shareholders = []
