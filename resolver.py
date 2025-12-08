@@ -430,7 +430,11 @@ def download_cs01_pdf(document_id: str) -> bytes:
     return response.content
 
 def get_cs01_filings_for_company(company_number: str) -> List[dict]:
-    """Get all CS01 filings for a company with their document IDs."""
+    """Get all CS01 filings for a company with their document IDs.
+    
+    Returns filings sorted with 'with updates' first, then 'with no updates'.
+    This optimizes shareholder extraction by prioritizing filings that contain changes.
+    """
     filing_history = get_company_filing_history(company_number,"confirmation-statement")
 
     cs01_filings = []
@@ -465,6 +469,18 @@ def get_cs01_filings_for_company(company_number: str) -> List[dict]:
                     print(f"Warning: Could not get details for CS01 filing {transaction_id}: {e}")
                     continue
 
+    # Sort filings: "with updates" first, then "with no updates"
+    # This optimizes shareholder extraction by checking meaningful filings first
+    def sort_key(filing):
+        description = filing.get("description", "").lower()
+        # Priority 0: Has updates (process first)
+        if "with updates" in description or "made statement" in description:
+            return (0, filing.get("date", ""))
+        # Priority 1: No updates or unclear (process after)
+        return (1, filing.get("date", ""))
+    
+    cs01_filings.sort(key=sort_key, reverse=True)  # Sort by priority, then by date (most recent first)
+    
     return cs01_filings
 
 def get_ar01_filings_for_company(company_number: str) -> List[dict]:
@@ -503,6 +519,15 @@ def get_ar01_filings_for_company(company_number: str) -> List[dict]:
                     print(f"Warning: Could not get details for AR01 filing {transaction_id}: {e}")
                     continue
 
+    # Sort filings: "with updates" first, then "with no updates"
+    def sort_key(filing):
+        description = filing.get("description", "").lower()
+        if "with updates" in description or "made statement" in description:
+            return (0, filing.get("date", ""))
+        return (1, filing.get("date", ""))
+    
+    ar01_filings.sort(key=sort_key, reverse=True)
+    
     return ar01_filings
 
 def download_ar01_pdf(document_id: str) -> bytes:
@@ -544,6 +569,9 @@ def get_in01_filings_for_company(company_number: str) -> List[dict]:
                     print(f"Warning: Could not get details for IN01 filing {transaction_id}: {e}")
                     continue
 
+    # Sort by date (most recent first) - IN01 filings typically don't have "with updates" descriptions
+    in01_filings.sort(key=lambda f: f.get("date", ""), reverse=True)
+    
     return in01_filings
 
 def download_in01_pdf(document_id: str) -> bytes:
