@@ -80,9 +80,12 @@ def extract_shareholder_info_with_openai(pdf_path):
     print(f"   DEBUG: Extracted text preview (first 500 chars):\n{full_text[:500]}\n")
     print(f"   DEBUG: Extracted text preview (last 500 chars):\n{full_text[-500:]}\n")
 
-    # Initialize OpenAI client
+    # Initialize OpenAI client with timeout
     try:
-        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        client = OpenAI(
+            api_key=os.getenv("OPENAI_API_KEY"),
+            timeout=60.0  # 60 second timeout for API calls
+        )
     except Exception as e:
         print(f"   OpenAI client initialization failed: {e}")
         print("   Please ensure OPENAI_API_KEY is set in the .env file")
@@ -177,6 +180,10 @@ Text from PDF:
         
         return shareholders_found
 
+    except TimeoutError as e:
+        print(f"   ⚠️ OpenAI API timeout after 60 seconds: {e}")
+        print(f"   Skipping this filing and trying next one...")
+        return []
     except Exception as e:
         print(f"   Error extracting with OpenAI: {e}")
         return []
