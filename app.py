@@ -2600,8 +2600,71 @@ def build_screening_list(bundle: dict, shareholders: list, item: dict) -> dict:
             })
     
     # 3. OWNERSHIP CHAIN - Extract from ownership tree
+    # First, add the target company's officers and PSCs
+    target_company_name = item.get("input_name") or profile.get("company_name", "Unknown")
+    target_company_number = item.get("company_number")
+    
+    # Add target company itself
+    if target_company_number:
+        screening["ownership_chain"].append({
+            "name": target_company_name,
+            "role": "Target Entity",
+            "shareholding": "100%",
+            "is_company": True,
+            "company_number": target_company_number,
+            "category": "Target Company",
+            "depth": -1  # Use -1 to indicate root/target
+        })
+        
+        # Add target company's directors
+        for officer in officers_items:
+            if officer.get("officer_role", "").lower() in ["director", "corporate-director", "shadow-director"]:
+                if not officer.get("resigned_on"):  # Only active directors
+                    screening["ownership_chain"].append({
+                        "name": officer.get("name", "Unknown"),
+                        "role": "Director",
+                        "shareholding": "-",
+                        "is_company": False,
+                        "company_number": target_company_number,
+                        "category": f"Directors of {target_company_name}",
+                        "depth": -1,
+                        "appointed_on": officer.get("appointed_on")
+                    })
+        
+        # Add target company's secretaries
+        for officer in officers_items:
+            if officer.get("officer_role", "").lower() in ["secretary", "corporate-secretary"]:
+                if not officer.get("resigned_on"):
+                    screening["ownership_chain"].append({
+                        "name": officer.get("name", "Unknown"),
+                        "role": "Company Secretary",
+                        "shareholding": "-",
+                        "is_company": False,
+                        "company_number": target_company_number,
+                        "category": f"Company Secretaries of {target_company_name}",
+                        "depth": -1,
+                        "appointed_on": officer.get("appointed_on")
+                    })
+        
+        # Add target company's PSCs
+        for psc in psc_items:
+            if not psc.get("ceased", False):
+                natures = psc.get("natures_of_control", [])
+                natures_str = ", ".join(natures) if natures else "Significant control"
+                
+                screening["ownership_chain"].append({
+                    "name": psc.get("name", "Unknown"),
+                    "role": "PSC",
+                    "shareholding": natures_str,
+                    "is_company": psc.get("kind") == "corporate-entity-person-with-significant-control",
+                    "company_number": target_company_number,
+                    "category": f"PSCs of {target_company_name}",
+                    "depth": -1,
+                    "natures_of_control": natures
+                })
+    
     def extract_ownership_chain(tree_node, depth=0):
-        """Recursively extract shareholders from ownership tree"""
+        """Recursively extract shareholders, directors, officers, and PSCs from ownership tree"""
         if not tree_node or depth > 10:  # Prevent infinite loops
             return
         
@@ -2613,62 +2676,116 @@ def build_screening_list(bundle: dict, shareholders: list, item: dict) -> dict:
             is_company = sh.get("is_company", False)
             company_number = sh.get("company_number")
             
-            # Direct shareholders ≥10%
-            if depth == 0 and sh_percentage >= 10:
-                category = "Direct Shareholders ≥10%"
-                description = "Individuals or entities with ≥10% shareholding"
-                if is_company:
+            # Add the entity itself to ownership_chain
+            if is_company and company_number:
+                # Determine category based on depth
+                if depth == 0:
                     category = "Corporate Shareholders"
-                    description = "Screen entire entity if it owns ≥10%"
+                    role = "Shareholder"
+                elif depth == 1:
+                    category = "Parent Companies"
+                    role = "Parent Company"
+                elif depth == 2:
+                    category = "Grandparent Companies"
+                    role = "Grandparent Company"
+                else:
+                    category = "Ultimate Parent Companies"
+                    role = "Ultimate Parent Company"
                 
                 screening["ownership_chain"].append({
                     "name": sh_name,
-                    "role": "Shareholder",
+                    "role": role,
                     "shareholding": f"{sh_percentage}%",
                     "shares_held": sh_shares,
-                    "is_company": is_company,
+                    "is_company": True,
                     "company_number": company_number,
                     "category": category,
-                    "description": description,
                     "depth": depth
                 })
+                
+                # Fetch officers and PSCs for this company
+                try:
+                    from resolver import get_company_bundle
+                    entity_bundle = get_company_bundle(company_number)
+                    
+                    # Extract officers (directors, secretaries, etc.)
+                    officers_data = entity_bundle.get("officers", {})
+                    officers_items = officers_data.get("items", [])
+                    
+                    for officer in officers_items:
+                        officer_name = officer.get("name", "Unknown")
+                        officer_role = officer.get("officer_role", "officer")
+                        appointed_on = officer.get("appointed_on", "")
+                        resigned_on = officer.get("resigned_on")
+                        
+                        # Skip resigned officers
+                        if resigned_on:
+                            continue
+                        
+                        # Categorize by role
+                        role_lower = officer_role.lower()
+                        if "director" in role_lower:
+                            category = f"Directors of {sh_name}"
+                            display_role = "Director"
+                        elif "secretary" in role_lower:
+                            category = f"Company Secretaries of {sh_name}"
+                            display_role = "Company Secretary"
+                        else:
+                            category = f"Officers of {sh_name}"
+                            display_role = officer_role.title()
+                        
+                        screening["ownership_chain"].append({
+                            "name": officer_name,
+                            "role": display_role,
+                            "shareholding": "-",
+                            "is_company": False,
+                            "company_number": company_number,
+                            "category": category,
+                            "depth": depth,
+                            "appointed_on": appointed_on
+                        })
+                    
+                    # Extract PSCs (Persons with Significant Control)
+                    pscs_data = entity_bundle.get("pscs", {})
+                    pscs_items = pscs_data.get("items", [])
+                    
+                    for psc in pscs_items:
+                        psc_name = psc.get("name", "Unknown")
+                        natures = psc.get("natures_of_control", [])
+                        ceased_on = psc.get("ceased_on")
+                        
+                        # Skip ceased PSCs
+                        if ceased_on:
+                            continue
+                        
+                        # Build natures description
+                        natures_str = ", ".join(natures) if natures else "Significant control"
+                        
+                        screening["ownership_chain"].append({
+                            "name": psc_name,
+                            "role": "PSC",
+                            "shareholding": natures_str,
+                            "is_company": psc.get("kind") == "corporate-entity-person-with-significant-control",
+                            "company_number": company_number,
+                            "category": f"PSCs of {sh_name}",
+                            "depth": depth,
+                            "natures_of_control": natures
+                        })
+                    
+                except Exception as e:
+                    # Log error but continue processing
+                    print(f"Error fetching officers/PSCs for {company_number}: {e}")
             
-            # Parent companies (any parent with ownership/control)
-            elif depth == 1 and is_company:
+            # Individual shareholders with ≥10%
+            elif not is_company and sh_percentage >= 10:
                 screening["ownership_chain"].append({
                     "name": sh_name,
-                    "role": "Parent Company",
+                    "role": "Individual Shareholder",
                     "shareholding": f"{sh_percentage}%",
-                    "is_company": True,
-                    "company_number": company_number,
-                    "category": "Parent Companies",
-                    "description": "Any parent entity with ownership/control",
-                    "depth": depth
-                })
-            
-            # Grandparent companies
-            elif depth == 2 and is_company:
-                screening["ownership_chain"].append({
-                    "name": sh_name,
-                    "role": "Grandparent Company",
-                    "shareholding": f"{sh_percentage}%",
-                    "is_company": True,
-                    "company_number": company_number,
-                    "category": "Grandparent Companies",
-                    "description": "Follow ownership chain upward",
-                    "depth": depth
-                })
-            
-            # Ultimate parent companies
-            elif depth >= 3 and is_company and not sh.get("children"):
-                screening["ownership_chain"].append({
-                    "name": sh_name,
-                    "role": "Ultimate Parent Company",
-                    "shareholding": f"{sh_percentage}%",
-                    "is_company": True,
-                    "company_number": company_number,
-                    "category": "Ultimate Parent Companies",
-                    "description": "Final entity in chain (unless exempt per policy)",
+                    "shares_held": sh_shares,
+                    "is_company": False,
+                    "company_number": None,
+                    "category": "Individual Shareholders ≥10%",
                     "depth": depth
                 })
             
