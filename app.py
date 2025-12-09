@@ -41,7 +41,7 @@ from corporate_structure import build_ownership_tree, flatten_ownership_tree
 # With 512MB Railway free tier: max 1 worker (sequential processing)
 # With 8GB Railway Hobby: max 2-3 workers
 # With 32GB Railway Pro: max 5-10 workers
-MAX_CONCURRENT_WORKERS = int(os.environ.get('MAX_WORKERS', '1'))  # Default: 1 (sequential)
+MAX_CONCURRENT_WORKERS = int(os.environ.get('MAX_WORKERS', '3'))  # Default: 3 (for 8GB Hobby plan)
 enrichment_executor = ThreadPoolExecutor(max_workers=MAX_CONCURRENT_WORKERS, thread_name_prefix='enrich')
 print(f"[WORKER_POOL] Initialized with {MAX_CONCURRENT_WORKERS} concurrent workers")
 
