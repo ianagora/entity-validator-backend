@@ -219,7 +219,9 @@ def process_filing_type(company_number, filing_type):
             # Limit filings to check, but use a higher limit for finding corporate shareholders
             # The optimization (commit 22ec091) sorts "with updates" first, so we're more likely to find meaningful data early
             # However, for corporate shareholders (holdings companies), we may need to check older filings (e.g., 2017)
-            MAX_FILINGS_TO_CHECK = 7  # Balanced: enough to find older holdings companies, but not too slow
+            # CRITICAL: For WAYNE PERRIN LIMITED, the 2017-09-13 filing is at position #9
+            # Must check at least 10 filings to capture this critical data
+            MAX_FILINGS_TO_CHECK = 10  # Increased to capture 2017 Wayne Perrin Holdings filing
             filings_to_process = filings[:MAX_FILINGS_TO_CHECK]
             
             # 🐛 DEBUG: Log filings being checked to verify sorting
