@@ -97,7 +97,6 @@ You are an expert at extracting shareholder information from UK company filings 
 Please analyze the following text from a CS01 PDF and extract all shareholder information. Return ONLY a valid JSON object with the following structure:
 
 {{
-  "total_issued_shares": TOTAL_NUMBER_OF_ISSUED_SHARES,
   "shareholders": [
     {{
       "name": "FULL SHAREHOLDER NAME",
@@ -109,14 +108,6 @@ Please analyze the following text from a CS01 PDF and extract all shareholder in
     }}
   ]
 }}
-
-CRITICAL - Total Issued Shares:
-- Look for the "Statement of Capital" section in the CS01 form
-- Find the line that says "Total number of shares" or "Aggregate number of shares"
-- This is the TOTAL ISSUED SHARE CAPITAL of the company
-- Example: If it says "Total number of shares: 25", set total_issued_shares to 25
-- This is CRUCIAL for accurate percentage calculations
-- If not found, set to null
 
 CRITICAL Rules:
 - Extract ALL shareholders mentioned in the document
@@ -180,8 +171,6 @@ Text from PDF:
         print(f"   Raw JSON response: {json.dumps(result, indent=2)}")
         
         shareholders_found = result.get("shareholders", [])
-        total_issued_shares = result.get("total_issued_shares", None)
-        
         if not shareholders_found:
             print(f"   ⚠️ WARNING: OpenAI returned empty shareholders list despite {len(full_text)} chars of text")
             print(f"   This usually means:")
@@ -189,26 +178,20 @@ Text from PDF:
             print(f"     - Text quality is poor (check DEBUG output above)")
             print(f"     - Shareholder info is in a different section or format")
         
-        if total_issued_shares:
-            print(f"   📊 STATEMENT OF CAPITAL: Total issued shares = {total_issued_shares}")
-        else:
-            print(f"   ⚠️ WARNING: No total issued shares found in Statement of Capital")
-        
-        return shareholders_found, total_issued_shares
+        return shareholders_found
 
     except TimeoutError as e:
         print(f"   ⚠️ OpenAI API timeout after 60 seconds: {e}")
         print(f"   Skipping this filing and trying next one...")
-        return [], None
+        return []
     except Exception as e:
         print(f"   Error extracting with OpenAI: {e}")
-        return [], None
+        return []
 
 def process_filing_type(company_number, filing_type):
-    """Process a specific filing type and return filing status, shareholder data, and total issued shares"""
+    """Process a specific filing type and return filing status and shareholder data"""
     shareholders = []
     filing_found = False
-    total_issued_shares_from_filing = None
 
     try:
         if filing_type == "CS01":
@@ -225,7 +208,7 @@ def process_filing_type(company_number, filing_type):
             download_func = download_in01_pdf
         else:
             print(f"Unknown filing type: {filing_type}")
-            return False, [], None
+            return False, []
 
         print(f"   Found {len(filings)} {filing_type} filings")
 
@@ -297,7 +280,7 @@ def process_filing_type(company_number, filing_type):
 
                         # Extract shareholder information using OpenAI
                         print(f"   Extracting shareholder information using OpenAI GPT-4o...")
-                        extracted_shareholders, total_issued_shares = extract_shareholder_info_with_openai(pdf_path)
+                        extracted_shareholders = extract_shareholder_info_with_openai(pdf_path)
 
                         if extracted_shareholders:
                             print(f"   ✅ Successfully extracted {len(extracted_shareholders)} shareholders from {filing_type} ({filing_date})")
@@ -312,7 +295,6 @@ def process_filing_type(company_number, filing_type):
                             
                             # Use these shareholders (most recent data)
                             shareholders = extracted_shareholders
-                            total_issued_shares_from_filing = total_issued_shares
                             print(f"   ✅ Using shareholders from {filing_type} ({filing_date}) - most recent data available")
                             break  # Stop after finding first filing with shareholders
                         else:
@@ -335,36 +317,21 @@ def process_filing_type(company_number, filing_type):
         print(f"Error processing {filing_type}: {e}")
         filing_found = False
 
-    return filing_found, shareholders, total_issued_shares_from_filing
+    return filing_found, shareholders
 
-def calculate_shareholder_percentages(shareholders, total_issued_shares_from_filing=None):
-    """Calculate percentage ownership for each shareholder
-    
-    Args:
-        shareholders: List of shareholders extracted from filing
-        total_issued_shares_from_filing: Total issued shares from Statement of Capital (if available)
-    
-    Returns:
-        Tuple of (shareholders_with_percentages, total_shares_used)
-    """
-    # CRITICAL FIX: Use total issued shares from Statement of Capital if available
-    # This ensures accurate percentage calculations even when not all shareholders are extracted
-    if total_issued_shares_from_filing and total_issued_shares_from_filing > 0:
-        total_shares = total_issued_shares_from_filing
-        print(f"  📊 Using total issued shares from Statement of Capital: {total_shares}")
-    else:
-        # Fallback: Sum up shares from extracted shareholders
-        total_shares = 0
-        for shareholder in shareholders:
-            try:
-                shares_held = shareholder.get('shares_held', 0)
-                if isinstance(shares_held, str):
-                    # Remove commas and convert to int
-                    shares_held = int(shares_held.replace(',', ''))
-                total_shares += int(shares_held)
-            except (ValueError, TypeError):
-                continue
-        print(f"  ⚠️ No Statement of Capital found - calculated total from extracted shareholders: {total_shares}")
+def calculate_shareholder_percentages(shareholders):
+    """Calculate percentage ownership for each shareholder"""
+    # Calculate total shares
+    total_shares = 0
+    for shareholder in shareholders:
+        try:
+            shares_held = shareholder.get('shares_held', 0)
+            if isinstance(shares_held, str):
+                # Remove commas and convert to int
+                shares_held = int(shares_held.replace(',', ''))
+            total_shares += int(shares_held)
+        except (ValueError, TypeError):
+            continue
 
     # Filter out shareholders with 0 shares and calculate percentages
     filtered_shareholders = []
@@ -442,7 +409,7 @@ def extract_shareholders_for_company(company_number):
             print(f"   {idx}. {sh.get('name', 'N/A')} - {sh.get('shares_held', 'N/A')} shares")
         
         # Process shareholders: calculate percentages and separate into regular vs parent
-        shareholders_with_percentages, total_shares = calculate_shareholder_percentages(cs01_shareholders, total_issued_shares)
+        shareholders_with_percentages, total_shares = calculate_shareholder_percentages(cs01_shareholders)
         
         print(f"📊 DEBUG - CS01 shareholders AFTER 0-share filtering (count: {len(shareholders_with_percentages)}):")
         for idx, sh in enumerate(shareholders_with_percentages, 1):
@@ -470,7 +437,7 @@ def extract_shareholders_for_company(company_number):
     if ar01_found and ar01_shareholders:
         print("\n✅ SUCCESS: Shareholder information found in AR01")
         # Process shareholders: calculate percentages and separate into regular vs parent
-        shareholders_with_percentages, total_shares = calculate_shareholder_percentages(ar01_shareholders, total_issued_shares)
+        shareholders_with_percentages, total_shares = calculate_shareholder_percentages(ar01_shareholders)
         regular_shareholders, parent_shareholders = identify_parent_companies(shareholders_with_percentages)
 
         status["regular_shareholders"] = regular_shareholders
@@ -486,16 +453,14 @@ def extract_shareholders_for_company(company_number):
     # Step 3: If AR01 failed or no shareholders, try IN01
     print("\n" + "=" * 70)
     print("Step 3: AR01 failed or no shareholders found, trying IN01...")
-    in01_found, in01_shareholders, in01_total_shares = process_filing_type(company_number, "IN01")
+    in01_found, in01_shareholders = process_filing_type(company_number, "IN01")
     status["in01_found"] = in01_found
     status["in01_has_shareholders"] = len(in01_shareholders) > 0
-    if not total_issued_shares:
-        total_issued_shares = in01_total_shares
 
     if in01_found and in01_shareholders:
         print("\n✅ SUCCESS: Shareholder information found in IN01")
         # Process shareholders: calculate percentages and separate into regular vs parent
-        shareholders_with_percentages, total_shares = calculate_shareholder_percentages(in01_shareholders, total_issued_shares)
+        shareholders_with_percentages, total_shares = calculate_shareholder_percentages(in01_shareholders)
         regular_shareholders, parent_shareholders = identify_parent_companies(shareholders_with_percentages)
 
         status["regular_shareholders"] = regular_shareholders
