@@ -8,6 +8,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi import Query
 from fastapi.responses import StreamingResponse
 from typing import Optional, Union, List, Dict, Any, Tuple, Literal
+import queue
+from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 import time
@@ -33,6 +35,15 @@ from shareholder_information import identify_parent_companies
 
 # corporate structure (recursive ownership tree)
 from corporate_structure import build_ownership_tree, flatten_ownership_tree
+
+# ---------------- Worker Pool Configuration ----------------
+# CRITICAL: Limit concurrent enrichments to prevent memory exhaustion
+# With 512MB Railway free tier: max 1 worker (sequential processing)
+# With 8GB Railway Hobby: max 2-3 workers
+# With 32GB Railway Pro: max 5-10 workers
+MAX_CONCURRENT_WORKERS = int(os.environ.get('MAX_WORKERS', '1'))  # Default: 1 (sequential)
+enrichment_executor = ThreadPoolExecutor(max_workers=MAX_CONCURRENT_WORKERS, thread_name_prefix='enrich')
+print(f"[WORKER_POOL] Initialized with {MAX_CONCURRENT_WORKERS} concurrent workers")
 
 # ---------------- App Setup ----------------
 @asynccontextmanager
@@ -1861,7 +1872,11 @@ def enrich_one(item_id: int):
         print(f"[enrich_one] failed for item {item_id}: {e}")
 
 def enqueue_enrich(item_id: int):
-    threading.Thread(target=enrich_one, args=(item_id,), daemon=True).start()
+    """
+    Enqueue enrichment task using worker pool to prevent memory exhaustion.
+    Uses ThreadPoolExecutor with MAX_CONCURRENT_WORKERS limit.
+    """
+    enrichment_executor.submit(enrich_one, item_id)
 
 def _canon_person_name(s: str) -> str:
     if not s:
@@ -2015,7 +2030,11 @@ def enrich_charity_one(item_id: int):
         print(f"[enrich_charity_one] failed for item {item_id}: {e}")
 
 def enqueue_enrich_charity(item_id: int):
-    threading.Thread(target=enrich_charity_one, args=(item_id,), daemon=True).start()
+    """
+    Enqueue charity enrichment task using worker pool to prevent memory exhaustion.
+    Uses ThreadPoolExecutor with MAX_CONCURRENT_WORKERS limit.
+    """
+    enrichment_executor.submit(enrich_charity_one, item_id)
 
 # ---------------- Admin: Users CRUD (login-free) ----------------
 @app.get("/admin/users", response_class=HTMLResponse)
