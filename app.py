@@ -1046,6 +1046,21 @@ def init_db():
             # Column already exists
             pass
 
+        # Add retry tracking columns for automatic retry with exponential backoff
+        try:
+            c.execute("ALTER TABLE items ADD COLUMN retry_count INTEGER DEFAULT 0")
+            print("[init_db] Added retry_count column to items table")
+        except sqlite3.OperationalError:
+            # Column already exists
+            pass
+
+        try:
+            c.execute("ALTER TABLE items ADD COLUMN last_error TEXT")
+            print("[init_db] Added last_error column to items table")
+        except sqlite3.OperationalError:
+            # Column already exists
+            pass
+
         # ---------------- Users / Roles (unchanged)
         c.execute("""
         CREATE TABLE IF NOT EXISTS users (
@@ -1495,8 +1510,20 @@ def bundle_to_xlsx(bundle: dict, xlsx_path: str):
 # ---------------- Enrichment worker ----------------
 
 # ---------------- Companies House enrichment ----------------
-def enrich_one(item_id: int):
-    """Fetch CH bundle, write artifacts, and update status with simple lock retries."""
+def enrich_one(item_id: int, max_retries: int = 3):
+    """Fetch CH bundle, write artifacts, and update status with automatic retry on failure.
+    
+    Args:
+        item_id: The item to enrich
+        max_retries: Maximum number of retry attempts (default: 3)
+    
+    Retry Strategy:
+        - Attempt 0: Immediate (first try)
+        - Attempt 1: Wait 60 seconds (1 minute)
+        - Attempt 2: Wait 120 seconds (2 minutes)
+        - Attempt 3: Wait 240 seconds (4 minutes)
+        - After 3 retries: Mark as permanently failed
+    """
     import time
     start_time = time.time()
     
@@ -1864,12 +1891,48 @@ def enrich_one(item_id: int):
             )
 
     except Exception as e:
+        error_message = str(e)
+        print(f"[enrich_one] Error for item {item_id}: {error_message}")
+        
         try:
             with db() as conn:
-                conn.execute("UPDATE items SET enrich_status='failed' WHERE id=?", (item_id,))
-        except Exception:
-            pass
-        print(f"[enrich_one] failed for item {item_id}: {e}")
+                # Get current retry count
+                row = conn.execute("SELECT retry_count FROM items WHERE id=?", (item_id,)).fetchone()
+                current_retry_count = row["retry_count"] if row else 0
+                
+                # Check if we should retry
+                if current_retry_count < max_retries:
+                    # Increment retry count and update status to pending for retry
+                    new_retry_count = current_retry_count + 1
+                    conn.execute(
+                        "UPDATE items SET enrich_status='pending', retry_count=?, last_error=? WHERE id=?",
+                        (new_retry_count, error_message, item_id)
+                    )
+                    
+                    # Calculate exponential backoff delay: 60s, 120s, 240s
+                    delay_seconds = 60 * (2 ** (new_retry_count - 1))
+                    print(f"[enrich_one] Retry {new_retry_count}/{max_retries} for item {item_id} - waiting {delay_seconds}s before retry")
+                    
+                    # Schedule retry with delay using ThreadPoolExecutor
+                    def delayed_retry():
+                        time.sleep(delay_seconds)
+                        enrich_one(item_id, max_retries)
+                    
+                    enrichment_executor.submit(delayed_retry)
+                else:
+                    # Max retries exceeded - mark as permanently failed
+                    conn.execute(
+                        "UPDATE items SET enrich_status='failed', last_error=? WHERE id=?",
+                        (error_message, item_id)
+                    )
+                    print(f"[enrich_one] PERMANENTLY FAILED after {max_retries} retries for item {item_id}: {error_message}")
+        except Exception as retry_error:
+            print(f"[enrich_one] Error in retry logic for item {item_id}: {retry_error}")
+            try:
+                with db() as conn:
+                    conn.execute("UPDATE items SET enrich_status='failed', last_error=? WHERE id=?", (error_message, item_id))
+            except Exception:
+                pass
 
 def enqueue_enrich(item_id: int):
     """
@@ -1977,7 +2040,21 @@ def _derive_linked_party_value(header: str, uploaded_map: dict, officers: list):
     return None
 
 # ---------------- Charity Commission enrichment (trustees etc.) ----------------
-def enrich_charity_one(item_id: int):
+def enrich_charity_one(item_id: int, max_retries: int = 3):
+    """Enrich charity item with automatic retry on failure.
+    
+    Args:
+        item_id: The item to enrich
+        max_retries: Maximum number of retry attempts (default: 3)
+    
+    Retry Strategy:
+        - Attempt 0: Immediate (first try)
+        - Attempt 1: Wait 60 seconds (1 minute)
+        - Attempt 2: Wait 120 seconds (2 minutes)
+        - Attempt 3: Wait 240 seconds (4 minutes)
+        - After 3 retries: Mark as permanently failed
+    """
+    import time
     try:
         with db() as conn:
             row = conn.execute("""
@@ -2022,12 +2099,48 @@ def enrich_charity_one(item_id: int):
                 (json_path, xlsx_path, item_id),
             )
     except Exception as e:
+        error_message = str(e)
+        print(f"[enrich_charity_one] Error for item {item_id}: {error_message}")
+        
         try:
             with db() as conn:
-                conn.execute("UPDATE items SET enrich_status='failed' WHERE id=?", (item_id,))
-        except Exception:
-            pass
-        print(f"[enrich_charity_one] failed for item {item_id}: {e}")
+                # Get current retry count
+                row = conn.execute("SELECT retry_count FROM items WHERE id=?", (item_id,)).fetchone()
+                current_retry_count = row["retry_count"] if row else 0
+                
+                # Check if we should retry
+                if current_retry_count < max_retries:
+                    # Increment retry count and update status to pending for retry
+                    new_retry_count = current_retry_count + 1
+                    conn.execute(
+                        "UPDATE items SET enrich_status='pending', retry_count=?, last_error=? WHERE id=?",
+                        (new_retry_count, error_message, item_id)
+                    )
+                    
+                    # Calculate exponential backoff delay: 60s, 120s, 240s
+                    delay_seconds = 60 * (2 ** (new_retry_count - 1))
+                    print(f"[enrich_charity_one] Retry {new_retry_count}/{max_retries} for item {item_id} - waiting {delay_seconds}s before retry")
+                    
+                    # Schedule retry with delay using ThreadPoolExecutor
+                    def delayed_retry():
+                        time.sleep(delay_seconds)
+                        enrich_charity_one(item_id, max_retries)
+                    
+                    enrichment_executor.submit(delayed_retry)
+                else:
+                    # Max retries exceeded - mark as permanently failed
+                    conn.execute(
+                        "UPDATE items SET enrich_status='failed', last_error=? WHERE id=?",
+                        (error_message, item_id)
+                    )
+                    print(f"[enrich_charity_one] PERMANENTLY FAILED after {max_retries} retries for item {item_id}: {error_message}")
+        except Exception as retry_error:
+            print(f"[enrich_charity_one] Error in retry logic for item {item_id}: {retry_error}")
+            try:
+                with db() as conn:
+                    conn.execute("UPDATE items SET enrich_status='failed', last_error=? WHERE id=?", (error_message, item_id))
+            except Exception:
+                pass
 
 def enqueue_enrich_charity(item_id: int):
     """
