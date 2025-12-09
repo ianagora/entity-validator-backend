@@ -296,6 +296,10 @@ def ch_candidates(subject_name: str) -> Tuple[List[dict], Optional[dict], str]:
     results = data.get("items", [])
     canonical_input = canonicalise_name(subject_name)
     matches, exact_match = [], None
+    
+    # Track all canonical matches to choose the best one
+    canonical_matches = []
+    
     for item in results:
         candidate_name = item.get("title", "")
         candidate_id   = item.get("company_number", "")
@@ -314,8 +318,24 @@ def ch_candidates(subject_name: str) -> Tuple[List[dict], Optional[dict], str]:
             "source_url": f"https://find-and-update.company-information.service.gov.uk/company/{candidate_id}/",
         }
         matches.append(match_obj)
+        
+        # Collect all canonical matches
         if canonical_candidate == canonical_input:
-            exact_match = {**match_obj, "confidence": 1.0}
+            canonical_matches.append(match_obj)
+    
+    # Choose best exact match when multiple companies have same canonical name
+    if canonical_matches:
+        # Priority 1: Exact case-insensitive string match (before canonicalization)
+        for match in canonical_matches:
+            if match["entity_name"].lower() == subject_name.lower():
+                exact_match = {**match, "confidence": 1.0}
+                break
+        
+        # Priority 2: If no exact string match, prefer longer name (more specific)
+        if not exact_match:
+            canonical_matches.sort(key=lambda m: len(m["entity_name"]), reverse=True)
+            exact_match = {**canonical_matches[0], "confidence": 1.0}
+    
     return matches, exact_match, search_url
 
 def _json_from(path: str):
