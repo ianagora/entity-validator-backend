@@ -1754,7 +1754,7 @@ def enrich_one(item_id: int):
                             
                             all_shareholders = bundle.get("regular_shareholders", []) + bundle.get("parent_shareholders", [])
                             
-                            from corporate_structure import build_ownership_tree, flatten_ownership_tree
+                            # build_ownership_tree already imported at module level (line 37)
                             ownership_tree = build_ownership_tree(
                                 company_number, 
                                 company_name,
