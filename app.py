@@ -2846,6 +2846,15 @@ def build_screening_list(bundle: dict, shareholders: list, item: dict) -> dict:
                         officer_role = officer.get("officer_role", "officer")
                         appointed_on = officer.get("appointed_on", "")
                         resigned_on = officer.get("resigned_on")
+                        nationality = officer.get("nationality")
+                        
+                        # Extract DOB (month/year format)
+                        dob = None
+                        if officer.get("date_of_birth"):
+                            month = officer.get("date_of_birth", {}).get("month")
+                            year = officer.get("date_of_birth", {}).get("year")
+                            if month and year:
+                                dob = f"{month}/{year}"
                         
                         # Skip resigned officers
                         if resigned_on:
@@ -2871,7 +2880,9 @@ def build_screening_list(bundle: dict, shareholders: list, item: dict) -> dict:
                             "company_number": company_number,
                             "category": category,
                             "depth": depth,
-                            "appointed_on": appointed_on
+                            "appointed_on": appointed_on,
+                            "nationality": nationality,
+                            "dob": dob
                         })
                     
                     # Extract PSCs (Persons with Significant Control)
