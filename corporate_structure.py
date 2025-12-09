@@ -251,24 +251,77 @@ def build_ownership_tree(
                 print(f"{indent}📊 Extraction status: {extraction_status}")
                 print(f"{indent}👥 Total PSCs: {len(all_shareholders)}")
             else:
-                # Normal company - extract from filings with timeout protection
-                try:
-                    # For recursive calls (depth > 0), use shorter timeout to prevent hanging
-                    if depth > 0:
-                        print(f"{indent}⚠️  Recursive call - will use PSC fallback if extraction takes too long")
-                    
-                    shareholder_result = extract_shareholders_for_company(company_number)
-                    regular_shareholders = shareholder_result.get('regular_shareholders', [])
-                    parent_shareholders = shareholder_result.get('parent_shareholders', [])
-                    all_shareholders = regular_shareholders + parent_shareholders
-                    extraction_status = shareholder_result.get('extraction_status', 'unknown')
-                except Exception as extraction_error:
-                    print(f"{indent}⚠️  Shareholder extraction failed: {extraction_error}")
-                    print(f"{indent}📊 Falling back to PSC register...")
-                    regular_shareholders = []
-                    parent_shareholders = []
+                # Normal company - for recursive calls, skip slow CS01 extraction and use PSC directly
+                if depth > 0:
+                    # PERFORMANCE FIX: Skip CS01 extraction for child companies (too slow)
+                    # Use PSC register instead for faster recursive tree building
+                    print(f"{indent}⚠️  Recursive call (depth={depth}) - using PSC register to avoid CS01 timeout")
+                    psc_data = bundle.get("pscs", {})
                     all_shareholders = []
-                    extraction_status = 'extraction_failed_using_psc'
+                    
+                    if psc_data and psc_data.get("items"):
+                        print(f"{indent}🔍 Processing {len(psc_data['items'])} PSCs for {company_number}")
+                        for psc in psc_data['items']:
+                            psc_name = psc.get("name", "Unknown")
+                            ceased_on = psc.get("ceased_on")
+                            
+                            # Skip ceased PSCs
+                            if ceased_on:
+                                print(f"{indent}⏭️  SKIPPING CEASED PSC: {psc_name}")
+                                continue
+                            
+                            print(f"{indent}✅  Adding active PSC: {psc_name}")
+                            natures = psc.get("natures_of_control", [])
+                            
+                            # Extract control percentage from PSC data
+                            percentage = 50  # Default
+                            percentage_band = "PSC Register"
+                            
+                            if any("ownership-of-shares-75-to-100" in n for n in natures):
+                                percentage = 87.5
+                                percentage_band = "75-100%"
+                            elif any("ownership-of-shares-50-to-75" in n for n in natures):
+                                percentage = 62.5
+                                percentage_band = "50-75%"
+                            elif any("ownership-of-shares-25-to-50" in n for n in natures):
+                                percentage = 37.5
+                                percentage_band = "25-50%"
+                            elif any("voting-rights-75-to-100" in n for n in natures):
+                                percentage = 87.5
+                                percentage_band = "75-100% (voting)"
+                            elif any("right-to-appoint-and-remove-directors" in n for n in natures):
+                                percentage = 100
+                                percentage_band = "Control (directors)"
+                            
+                            shareholder = {
+                                "name": psc_name,
+                                "shares_held": "N/A (PSC data)",
+                                "percentage": percentage,
+                                "percentage_band": percentage_band,
+                                "share_class": "Ordinary",
+                                "source": "PSC Register"
+                            }
+                            all_shareholders.append(shareholder)
+                    
+                    regular_shareholders = all_shareholders
+                    parent_shareholders = []
+                    extraction_status = "found_via_psc_recursive"
+                    print(f"{indent}📊 PSC extraction: {len(all_shareholders)} controllers found")
+                else:
+                    # Root company (depth=0) - use full CS01 extraction
+                    try:
+                        shareholder_result = extract_shareholders_for_company(company_number)
+                        regular_shareholders = shareholder_result.get('regular_shareholders', [])
+                        parent_shareholders = shareholder_result.get('parent_shareholders', [])
+                        all_shareholders = regular_shareholders + parent_shareholders
+                        extraction_status = shareholder_result.get('extraction_status', 'unknown')
+                    except Exception as extraction_error:
+                        print(f"{indent}⚠️  Shareholder extraction failed: {extraction_error}")
+                        print(f"{indent}📊 Falling back to PSC register...")
+                        regular_shareholders = []
+                        parent_shareholders = []
+                        all_shareholders = []
+                        extraction_status = 'extraction_failed_using_psc'
                 
                 # DEBUG: Log what shareholders are being used for this company
                 print(f"{indent}🔍 DEBUG - Shareholders for {company_number} ({company_name}):")
