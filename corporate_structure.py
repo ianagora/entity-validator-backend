@@ -167,6 +167,7 @@ def build_ownership_tree(
             # Extract shareholders normally for child companies
             # First check if this is a company limited by guarantee
             from resolver import get_company_bundle
+            import signal
             
             try:
                 bundle = get_company_bundle(company_number)
@@ -250,12 +251,24 @@ def build_ownership_tree(
                 print(f"{indent}📊 Extraction status: {extraction_status}")
                 print(f"{indent}👥 Total PSCs: {len(all_shareholders)}")
             else:
-                # Normal company - extract from filings
-                shareholder_result = extract_shareholders_for_company(company_number)
-                regular_shareholders = shareholder_result.get('regular_shareholders', [])
-                parent_shareholders = shareholder_result.get('parent_shareholders', [])
-                all_shareholders = regular_shareholders + parent_shareholders
-                extraction_status = shareholder_result.get('extraction_status', 'unknown')
+                # Normal company - extract from filings with timeout protection
+                try:
+                    # For recursive calls (depth > 0), use shorter timeout to prevent hanging
+                    if depth > 0:
+                        print(f"{indent}⚠️  Recursive call - will use PSC fallback if extraction takes too long")
+                    
+                    shareholder_result = extract_shareholders_for_company(company_number)
+                    regular_shareholders = shareholder_result.get('regular_shareholders', [])
+                    parent_shareholders = shareholder_result.get('parent_shareholders', [])
+                    all_shareholders = regular_shareholders + parent_shareholders
+                    extraction_status = shareholder_result.get('extraction_status', 'unknown')
+                except Exception as extraction_error:
+                    print(f"{indent}⚠️  Shareholder extraction failed: {extraction_error}")
+                    print(f"{indent}📊 Falling back to PSC register...")
+                    regular_shareholders = []
+                    parent_shareholders = []
+                    all_shareholders = []
+                    extraction_status = 'extraction_failed_using_psc'
                 
                 # DEBUG: Log what shareholders are being used for this company
                 print(f"{indent}🔍 DEBUG - Shareholders for {company_number} ({company_name}):")
@@ -386,20 +399,31 @@ def build_ownership_tree(
                     
                     # Recursively get shareholders of this company
                     print(f"{indent}     🔄 Recursing into: {child_company_name}")
-                    child_tree = build_ownership_tree(
-                        child_company_number,
-                        child_company_name,
-                        depth + 1,
-                        max_depth,
-                        visited
-                    )
-                    
-                    shareholder_info['children'] = child_tree.get('shareholders', [])
-                    shareholder_info['child_company'] = {
-                        'company_number': child_company_number,
-                        'company_name': child_company_name,
-                        'company_status': company_search.get('company_status', '')
-                    }
+                    try:
+                        child_tree = build_ownership_tree(
+                            child_company_number,
+                            child_company_name,
+                            depth + 1,
+                            max_depth,
+                            visited
+                        )
+                        
+                        shareholder_info['children'] = child_tree.get('shareholders', [])
+                        shareholder_info['child_company'] = {
+                            'company_number': child_company_number,
+                            'company_name': child_company_name,
+                            'company_status': company_search.get('company_status', '')
+                        }
+                    except Exception as recursion_error:
+                        # If recursion fails, still add the company but without children
+                        print(f"{indent}     ⚠️  Recursion failed for {child_company_name}: {recursion_error}")
+                        shareholder_info['children'] = []
+                        shareholder_info['recursion_error'] = str(recursion_error)
+                        shareholder_info['child_company'] = {
+                            'company_number': child_company_number,
+                            'company_name': child_company_name,
+                            'company_status': company_search.get('company_status', '')
+                        }
                 else:
                     print(f"{indent}     ⚠️  Could not find company in Companies House")
                     shareholder_info['search_failed'] = True
