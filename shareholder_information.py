@@ -241,18 +241,15 @@ def process_filing_type(company_number, filing_type):
                 print(f"   Found {len(filings)} filings, limiting to {MAX_FILINGS_TO_CHECK} most recent (prioritized by 'with updates' first)")
 
             # Process filings in order (most recent first) until we find shareholders
-            # IMPORTANT: We prefer filings with corporate/parent shareholders over individual shareholders
-            # This ensures we find holdings companies even if the most recent filing shows individuals
-            has_parent_shareholders = False
-            individual_shareholders_backup = None  # Store individual shareholders as fallback
+            # CRITICAL FIX: Use the MOST RECENT filing with shareholders, regardless of type
+            # Previous logic prioritized corporate shareholders over individuals, causing outdated data
+            # Example: INSIDE CONNECTIONS MOBILE showed 2020 corporate data instead of 2023 individual data
             
             for i, filing in enumerate(filings_to_process):
-                # If we already found shareholders with parent companies, we're done
-                if has_parent_shareholders:
+                # Use the first filing that has shareholders (most recent with data)
+                if shareholders:
+                    print(f"   ✅ Shareholders found, stopping search at filing {i}/{len(filings_to_process)}")
                     break
-                
-                # If we found individual shareholders but no parent companies, keep looking
-                # (corporate shareholders are more useful for ownership trees)
 
                 doc_id = filing.get('document_id')
                 filing_date = filing.get('date', 'unknown')
@@ -296,31 +293,10 @@ def process_filing_type(company_number, filing_type):
                                 sh_class = sh.get('share_class', 'N/A')
                                 print(f"      {idx}. {sh_name} - {sh_shares} shares ({sh_class})")
                             
-                            # Check if we found parent/corporate shareholders (companies, not individuals)
-                            # Look for company suffixes like LIMITED, LTD, PLC, LLP, etc.
-                            parent_suffixes = ['limited', 'ltd', 'holdings', 'plc', 'llp', 'lp', 'trust']
-                            has_corporate = False
-                            corporate_names = []
-                            for sh in extracted_shareholders:
-                                name = sh.get('name', '').lower()
-                                if any(suffix in name for suffix in parent_suffixes):
-                                    has_corporate = True
-                                    corporate_names.append(sh.get('name', 'N/A'))
-                            
-                            if has_corporate:
-                                # Found corporate shareholders - use these and stop
-                                shareholders = extracted_shareholders
-                                has_parent_shareholders = True
-                                print(f"   🏢 Found corporate shareholders: {', '.join(corporate_names)}")
-                                print(f"   🛑 STOP: Will use this filing ({filing_type} {filing_date}) and stop processing")
-                                break  # Early exit - no need to check more filings
-                            else:
-                                # Only individuals - save as backup but keep looking
-                                if not individual_shareholders_backup:
-                                    individual_shareholders_backup = extracted_shareholders
-                                    print(f"   ⚠️ Only individual shareholders found - saving as backup, will check older filings for corporate shareholders...")
-                                else:
-                                    print(f"   ⚠️ Only individual shareholders found - continuing to check older filings...")
+                            # Use these shareholders (most recent data)
+                            shareholders = extracted_shareholders
+                            print(f"   ✅ Using shareholders from {filing_type} ({filing_date}) - most recent data available")
+                            break  # Stop after finding first filing with shareholders
                         else:
                             print(f"   No shareholders found in this {filing_type} filing, trying next one...")
 
@@ -331,11 +307,6 @@ def process_filing_type(company_number, filing_type):
                     print(f"   No document ID found for {filing_type} filing {i+1}, skipping...")
                     continue
 
-            # If no corporate shareholders found, use individual shareholders as fallback
-            if not shareholders and individual_shareholders_backup:
-                shareholders = individual_shareholders_backup
-                print(f"   ℹ️ No corporate shareholders found in any filing, using individual shareholders as fallback")
-            
             if not shareholders:
                 print(f"   No shareholders found in the {len(filings_to_process)} {filing_type} filings checked (out of {len(filings)} total)")
         else:

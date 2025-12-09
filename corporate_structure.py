@@ -218,9 +218,13 @@ def build_ownership_tree(
                         elif any("right-to-appoint-and-remove-directors" in n for n in natures):
                             percentage_band = "Control (directors)"
                             percentage = 100
+                        elif any("significant-influence-or-control" in n for n in natures):
+                            percentage_band = "Significant influence/control"
+                            percentage = 0  # Unknown percentage
                         else:
-                            percentage_band = "Significant control"
-                            percentage = 50
+                            # Default for unrecognized natures
+                            percentage_band = "Other control"
+                            percentage = 0
                         
                         shareholder = {
                             "name": psc_name,
@@ -302,6 +306,12 @@ def build_ownership_tree(
                             elif any("right-to-appoint-and-remove-directors" in n for n in natures):
                                 percentage = 100
                                 percentage_band = "Control (directors)"
+                            elif any("significant-influence-or-control" in n for n in natures):
+                                percentage = 0
+                                percentage_band = "Significant influence/control"
+                            else:
+                                percentage = 0
+                                percentage_band = "Other control"
                             
                             shareholder = {
                                 "name": psc_name,
@@ -328,16 +338,31 @@ def build_ownership_tree(
         # Process each shareholder
         processed_shareholders = []
         
+        # FIX ISSUE #3: If there's only one shareholder with 75-100% band, show 100%
+        single_shareholder_100 = False
+        if len(all_shareholders) == 1:
+            only_shareholder = all_shareholders[0]
+            band = only_shareholder.get('percentage_band', '')
+            if '75-100' in band or '75%-100%' in band:
+                single_shareholder_100 = True
+                print(f"{indent}🔍 Single shareholder with 75-100% band detected - will show as 100%")
+        
         for shareholder in all_shareholders:
             shareholder_name = shareholder.get('name', 'Unknown')
             shares_held = shareholder.get('shares_held', 0)
             percentage = shareholder.get('percentage', 0.0)
+            percentage_band = shareholder.get('percentage_band', '')
+            
+            # If single shareholder with 75-100%, override to 100%
+            if single_shareholder_100:
+                percentage = 100.0
+                percentage_band = '100%'
             
             shareholder_info = {
                 'name': shareholder_name,
                 'shares_held': shares_held,
                 'percentage': percentage,
-                'percentage_band': shareholder.get('percentage_band', ''),
+                'percentage_band': percentage_band,
                 'share_class': shareholder.get('share_class', ''),
                 'is_company': is_company_name(shareholder_name),
                 'children': []
