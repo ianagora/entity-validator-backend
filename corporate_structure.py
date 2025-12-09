@@ -337,6 +337,7 @@ def build_ownership_tree(
                 'name': shareholder_name,
                 'shares_held': shares_held,
                 'percentage': percentage,
+                'percentage_band': shareholder.get('percentage_band', ''),
                 'share_class': shareholder.get('share_class', ''),
                 'is_company': is_company_name(shareholder_name),
                 'children': []
