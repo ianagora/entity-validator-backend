@@ -8,6 +8,7 @@ import os
 import pdfplumber
 import re
 import json
+import time
 from openai import OpenAI
 from dotenv import load_dotenv
 
@@ -55,18 +56,28 @@ def validate_and_fallback_regex(ocr_text, openai_shareholders):
         print("   🔍 OpenAI found no shareholders, trying regex fallback...")
         return extract_shareholders_with_regex(ocr_text_cleaned), True
     
-    # Check for suspicious results (e.g., shareholder with 0 shares when text shows shares)
+    # ANTI-HALLUCINATION SAFEGUARDS
     suspicious = False
+    hallucination_reasons = []
+    
     print(f"   🔍 VALIDATION: Checking {len(openai_shareholders)} OpenAI-extracted shareholders...")
     print(f"      OCR text length: {len(ocr_text)} characters")
     print(f"      OCR text contains 'Shareholding': {'Shareholding' in ocr_text}")
     print(f"      OCR text contains 'Name:': {'Name:' in ocr_text}")
     
+    # SAFEGUARD 1: Verify each OpenAI shareholder against OCR text
     for sh in openai_shareholders:
         name = sh.get('name', '').upper()
         shares = sh.get('shares_held', 0)
         
         print(f"      - Checking {name}: {shares} shares")
+        
+        # Check if shareholder name exists in OCR text (catch completely hallucinated names)
+        if name not in ocr_text_cleaned.upper():
+            print(f"        ⚠️  WARNING: Shareholder name '{name}' NOT FOUND in OCR text (possible hallucination)")
+            hallucination_reasons.append(f"Name '{name}' not found in OCR text")
+            suspicious = True
+            break
         
         # If shareholder has 0 shares, check if OCR text mentions them with shares
         if shares == 0:
@@ -83,6 +94,7 @@ def validate_and_fallback_regex(ocr_text, openai_shareholders):
                 print(f"        🔎 Regex found {name} with {extracted_shares} shares in OCR text")
                 if extracted_shares > 0:
                     print(f"   ⚠️  VALIDATION FAILED: OpenAI extracted {name} with 0 shares, but OCR text shows {extracted_shares} shares")
+                    hallucination_reasons.append(f"OpenAI: {name} has 0 shares, but OCR shows {extracted_shares} shares")
                     suspicious = True
                     break
             else:
@@ -92,16 +104,29 @@ def validate_and_fallback_regex(ocr_text, openai_shareholders):
                     idx = ocr_text_cleaned.find('Shareholding')
                     print(f"        Sample OCR text: ...{ocr_text_cleaned[idx:idx+200]}...")
     
+    # SAFEGUARD 2: Check for missing shareholders (count mismatch)
+    # Count "Shareholding N:" occurrences in OCR text
+    shareholding_count = len(re.findall(r'Shareholding\s+\d+:', ocr_text_cleaned, re.IGNORECASE))
+    if shareholding_count > 0 and shareholding_count != len(openai_shareholders):
+        print(f"   ⚠️  MISMATCH: OCR text has {shareholding_count} shareholdings, but OpenAI extracted {len(openai_shareholders)} shareholders")
+        hallucination_reasons.append(f"Count mismatch: OCR shows {shareholding_count} shareholdings, OpenAI extracted {len(openai_shareholders)}")
+        suspicious = True
+    
     # If suspicious, use regex fallback
     if suspicious:
+        print(f"   🚨 HALLUCINATION DETECTED:")
+        for reason in hallucination_reasons:
+            print(f"      - {reason}")
         print("   🔄 Using regex fallback due to suspicious OpenAI extraction...")
         regex_shareholders = extract_shareholders_with_regex(ocr_text_cleaned)
         if regex_shareholders:
+            print(f"   ✅ Regex fallback found {len(regex_shareholders)} shareholders (validated against OCR text)")
             return regex_shareholders, True
         else:
             print("   ⚠️  Regex fallback found no shareholders, keeping OpenAI results")
             return openai_shareholders, False
     
+    print(f"   ✅ Validation passed: OpenAI results match OCR text")
     return openai_shareholders, False
 
 def extract_shareholders_with_regex(ocr_text):
@@ -253,18 +278,52 @@ Text from PDF:
 {full_text}
 """
 
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {"role": "system", "content": "You are a precise data extraction assistant. Return only valid JSON."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.1,
-            max_tokens=2000
-        )
+    # Rate limit retry logic with exponential backoff
+    max_retries = 3
+    retry_count = 0
+    base_wait_time = 2.5  # seconds
+    
+    result_text = None
+    
+    while retry_count < max_retries:
+        try:
+            if retry_count > 0:
+                wait_time = base_wait_time * (2 ** (retry_count - 1))  # Exponential backoff: 2.5s, 5s, 10s
+                print(f"   ⏳ Rate limit hit, waiting {wait_time}s before retry {retry_count + 1}/{max_retries}...")
+                time.sleep(wait_time)
+            
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": "You are a precise data extraction assistant. Return only valid JSON."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.1,
+                max_tokens=2000
+            )
 
-        result_text = response.choices[0].message.content.strip()
+            result_text = response.choices[0].message.content.strip()
+            break  # Success! Exit retry loop
+            
+        except Exception as api_error:
+            # Check if it's a rate limit error (429)
+            error_str = str(api_error)
+            if "429" in error_str or "rate_limit_exceeded" in error_str.lower() or "rate limit" in error_str.lower():
+                retry_count += 1
+                if retry_count >= max_retries:
+                    print(f"   ❌ OpenAI rate limit: Max retries ({max_retries}) reached")
+                    print(f"   🔄 Falling back to regex-only extraction...")
+                    # Try regex extraction directly
+                    regex_shareholders = extract_shareholders_with_regex(full_text)
+                    return regex_shareholders if regex_shareholders else []
+                # Otherwise, continue to next retry iteration
+            else:
+                # Not a rate limit error, propagate it
+                raise api_error
+    
+    if result_text is None:
+        print(f"   ❌ OpenAI API failed after {max_retries} retries")
+        return []
 
         # Clean up the response (remove markdown code blocks if present)
         if result_text.startswith("```json"):
