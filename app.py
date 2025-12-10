@@ -3378,6 +3378,30 @@ async def api_get_item_details(item_id: int):
         item_dict = dict(item) if item else {}
         screening_list = build_screening_list(bundle, shareholders, item_dict)
         
+        # 🐛 DEBUG: Log ownership tree structure to investigate Issue #3 (missing shares for individuals)
+        if ownership_tree and ownership_tree.get("shareholders"):
+            print(f"[DEBUG Issue #3] Item {item_id} ownership tree structure:")
+            for idx, shareholder in enumerate(ownership_tree.get("shareholders", []), 1):
+                sh_name = shareholder.get("name", "N/A")
+                sh_shares = shareholder.get("shares_held", "MISSING")
+                sh_percentage = shareholder.get("percentage", "N/A")
+                sh_is_company = shareholder.get("is_company", False)
+                print(f"   [{idx}] {sh_name} (Company: {sh_is_company})")
+                print(f"       - shares_held: {sh_shares}")
+                print(f"       - percentage: {sh_percentage}%")
+                
+                # Check nested shareholders (children)
+                if shareholder.get("children"):
+                    print(f"       - children: {len(shareholder['children'])} nested shareholders")
+                    for child_idx, child in enumerate(shareholder["children"], 1):
+                        child_name = child.get("name", "N/A")
+                        child_shares = child.get("shares_held", "MISSING")
+                        child_percentage = child.get("percentage", "N/A")
+                        child_is_company = child.get("is_company", False)
+                        print(f"          [{child_idx}] {child_name} (Company: {child_is_company})")
+                        print(f"              - shares_held: {child_shares}")
+                        print(f"              - percentage: {child_percentage}%")
+        
         # Build response
         result = {
             "id": item["id"],
