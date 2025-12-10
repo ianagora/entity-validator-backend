@@ -39,6 +39,111 @@ def extract_text_with_ocr(pdf_path):
 
     return full_text
 
+def validate_and_fallback_regex(ocr_text, openai_shareholders):
+    """
+    Validate OpenAI extraction against OCR text and use regex fallback if suspicious.
+    
+    Returns: (validated_shareholders, used_fallback)
+    """
+    # Clean up common OCR errors before validation
+    # Common Tesseract misreads: §0->50, |0->10, |->1, etc.
+    ocr_text_cleaned = ocr_text.replace('§0', '50').replace('§', '5')
+    ocr_text_cleaned = ocr_text_cleaned.replace('|0', '10').replace('l0', '10')
+    
+    # If OpenAI found no shareholders, try regex
+    if not openai_shareholders:
+        print("   🔍 OpenAI found no shareholders, trying regex fallback...")
+        return extract_shareholders_with_regex(ocr_text_cleaned), True
+    
+    # Check for suspicious results (e.g., shareholder with 0 shares when text shows shares)
+    suspicious = False
+    print(f"   🔍 VALIDATION: Checking {len(openai_shareholders)} OpenAI-extracted shareholders...")
+    print(f"      OCR text length: {len(ocr_text)} characters")
+    print(f"      OCR text contains 'Shareholding': {'Shareholding' in ocr_text}")
+    print(f"      OCR text contains 'Name:': {'Name:' in ocr_text}")
+    
+    for sh in openai_shareholders:
+        name = sh.get('name', '').upper()
+        shares = sh.get('shares_held', 0)
+        
+        print(f"      - Checking {name}: {shares} shares")
+        
+        # If shareholder has 0 shares, check if OCR text mentions them with shares
+        if shares == 0:
+            print(f"        ⚠️  Found 0-share entry, searching OCR text...")
+            print(f"        OCR text contains '{name}': {name in ocr_text}")
+            # Look for this shareholder name in the OCR text with shareholding info
+            name_pattern = re.escape(name)
+            # Pattern: "Shareholding X: <number> ... Name: <shareholder name>"
+            pattern = rf'Shareholding\s+\d+:\s*(\d+)\s+\w+\s+shares.*?Name:\s*{name_pattern}'
+            match = re.search(pattern, ocr_text_cleaned, re.IGNORECASE | re.DOTALL)
+            
+            if match:
+                extracted_shares = int(match.group(1))
+                print(f"        🔎 Regex found {name} with {extracted_shares} shares in OCR text")
+                if extracted_shares > 0:
+                    print(f"   ⚠️  VALIDATION FAILED: OpenAI extracted {name} with 0 shares, but OCR text shows {extracted_shares} shares")
+                    suspicious = True
+                    break
+            else:
+                print(f"        ℹ️  No regex match found for {name} in OCR text")
+                # Show a small sample of the OCR text for debugging
+                if 'Shareholding' in ocr_text_cleaned:
+                    idx = ocr_text_cleaned.find('Shareholding')
+                    print(f"        Sample OCR text: ...{ocr_text_cleaned[idx:idx+200]}...")
+    
+    # If suspicious, use regex fallback
+    if suspicious:
+        print("   🔄 Using regex fallback due to suspicious OpenAI extraction...")
+        regex_shareholders = extract_shareholders_with_regex(ocr_text_cleaned)
+        if regex_shareholders:
+            return regex_shareholders, True
+        else:
+            print("   ⚠️  Regex fallback found no shareholders, keeping OpenAI results")
+            return openai_shareholders, False
+    
+    return openai_shareholders, False
+
+def extract_shareholders_with_regex(ocr_text):
+    """
+    Extract shareholder information using regex patterns as a fallback.
+    
+    Pattern: "Shareholding N: X ORDINARY shares ... Name: SHAREHOLDER NAME"
+    """
+    print("   📋 Attempting regex-based shareholder extraction...")
+    
+    shareholders = []
+    
+    # Pattern to match CS01 shareholding format:
+    # "Shareholding 1: 50 ORDINARY shares held as at the date of this confirmation statement\nName: MARK SLINGER"
+    pattern = r'Shareholding\s+\d+:\s*(\d+)\s+([\w\s]+)\s+shares.*?Name:\s*([A-Z\s,\.\-\']+?)(?=\n\n|\nShareholding|\nElectronically|$)'
+    
+    matches = re.finditer(pattern, ocr_text, re.IGNORECASE | re.DOTALL)
+    
+    for match in matches:
+        shares_held = int(match.group(1))
+        share_class = match.group(2).strip().upper()
+        name = match.group(3).strip()
+        
+        # Clean up name (remove extra whitespace, normalize)
+        name = ' '.join(name.split())
+        
+        shareholders.append({
+            'name': name,
+            'shares_held': shares_held,
+            'share_class': share_class,
+            'transfers': []
+        })
+    
+    if shareholders:
+        print(f"   ✅ Regex extraction found {len(shareholders)} shareholders:")
+        for i, sh in enumerate(shareholders, 1):
+            print(f"      {i}. {sh['name']}: {sh['shares_held']} {sh['share_class']} shares")
+    else:
+        print(f"   ❌ Regex extraction found no shareholders")
+    
+    return shareholders
+
 def extract_shareholder_info_with_openai(pdf_path):
     """Extract shareholder information from CS01 PDF - Tesseract first, OpenAI fallback"""
     full_text = ""
@@ -109,9 +214,14 @@ Please analyze the following text from a CS01 PDF and extract all shareholder in
   ]
 }}
 
-CRITICAL Rules:
+CRITICAL CS01 FORMAT RULES:
+- CS01 forms use this format: "Shareholding N: [NUMBER] [CLASS] shares held... Name: [SHAREHOLDER NAME]"
+- The share count appears BEFORE the "Name:" field
+- Example: "Shareholding 1: 50 ORDINARY shares held as at the date of this confirmation statement\nName: MARK SLINGER"
+  Should extract: {{"name": "MARK SLINGER", "shares_held": 50, "share_class": "ORDINARY"}}
 - Extract ALL shareholders mentioned in the document
 - For the "name" field: Extract ONLY the text that appears after "Name:" in each shareholding section
+- For the "shares_held" field: Extract the NUMBER that appears BEFORE "shares held" in the same shareholding section
 - DO NOT include trust names, settlement names, or discretionary trust references in the "name" field
 - Trust references like "RE W C ROSE DISCRETIONARY TRUST" or "RE. WC ROSE SETTLEMENT" should be IGNORED
 - The shareholder name is the legal entity that holds the shares, not the trust they represent
@@ -178,7 +288,13 @@ Text from PDF:
             print(f"     - Text quality is poor (check DEBUG output above)")
             print(f"     - Shareholder info is in a different section or format")
         
-        return shareholders_found
+        # VALIDATION: Check OpenAI results against OCR text and use regex fallback if needed
+        validated_shareholders, used_fallback = validate_and_fallback_regex(full_text, shareholders_found)
+        
+        if used_fallback:
+            print(f"   ✅ Using regex fallback results: {len(validated_shareholders)} shareholders")
+        
+        return validated_shareholders
 
     except TimeoutError as e:
         print(f"   ⚠️ OpenAI API timeout after 60 seconds: {e}")
