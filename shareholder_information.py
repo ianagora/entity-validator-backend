@@ -324,17 +324,18 @@ Text from PDF:
     if result_text is None:
         print(f"   ❌ OpenAI API failed after {max_retries} retries")
         return []
+    
+    # Clean up the response (remove markdown code blocks if present)
+    if result_text.startswith("```json"):
+        result_text = result_text[7:]
+    if result_text.startswith("```"):
+        result_text = result_text[3:]
+    if result_text.endswith("```"):
+        result_text = result_text[:-3]
 
-        # Clean up the response (remove markdown code blocks if present)
-        if result_text.startswith("```json"):
-            result_text = result_text[7:]
-        if result_text.startswith("```"):
-            result_text = result_text[3:]
-        if result_text.endswith("```"):
-            result_text = result_text[:-3]
+    result_text = result_text.strip()
 
-        result_text = result_text.strip()
-
+    try:
         # Parse the JSON
         result = json.loads(result_text)
         print(f"   Raw JSON response: {json.dumps(result, indent=2)}")
@@ -354,7 +355,7 @@ Text from PDF:
             print(f"   ✅ Using regex fallback results: {len(validated_shareholders)} shareholders")
         
         return validated_shareholders
-
+    
     except TimeoutError as e:
         print(f"   ⚠️ OpenAI API timeout after 60 seconds: {e}")
         print(f"   Skipping this filing and trying next one...")
