@@ -3029,16 +3029,25 @@ def build_screening_list(bundle: dict, shareholders: list, item: dict) -> dict:
                     # Log error but continue processing
                     print(f"Error fetching officers/PSCs for {company_number}: {e}")
             
-            # Individual shareholders with ≥10%
-            elif not is_company and sh_percentage >= 10:
+            # Individual shareholders - include ALL individuals from ownership tree
+            # (Not just ≥10%, as they may be significant in nested structures)
+            elif not is_company:
+                # Determine category based on percentage and depth
+                if sh_percentage >= 25:
+                    category = "Individual Shareholders ≥25%"
+                elif sh_percentage >= 10:
+                    category = "Individual Shareholders ≥10%"
+                else:
+                    category = "Individual Shareholders <10%"
+                
                 screening["ownership_chain"].append({
                     "name": sh_name,
                     "role": "Individual Shareholder",
-                    "shareholding": f"{sh_percentage}%",
+                    "shareholding": f"{sh_percentage}%" if sh_percentage > 0 else f"{sh_shares} shares",
                     "shares_held": sh_shares,
                     "is_company": False,
                     "company_number": None,
-                    "category": "Individual Shareholders ≥10%",
+                    "category": category,
                     "depth": depth
                 })
             
