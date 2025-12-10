@@ -2910,7 +2910,12 @@ def build_screening_list(bundle: dict, shareholders: list, item: dict) -> dict:
         if not tree_node or depth > 10:  # Prevent infinite loops
             return
         
+        # Check both 'shareholders' and 'children' fields
+        # 'shareholders' = used at root level
+        # 'children' = used for nested corporate shareholders
         shareholders_in_node = tree_node.get("shareholders", [])
+        if not shareholders_in_node and tree_node.get("children"):
+            shareholders_in_node = tree_node.get("children", [])
         for sh in shareholders_in_node:
             sh_name = sh.get("name", "Unknown")
             sh_percentage = sh.get("percentage", 0)
