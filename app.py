@@ -2945,13 +2945,28 @@ def build_screening_list(bundle: dict, shareholders: list, item: dict) -> dict:
                     "depth": depth
                 })
                 
-                # Fetch officers and PSCs for this company
+                # Get officers and PSCs for this company
+                # PRIORITY 1: Use cached data from ownership tree (fast, no API calls)
+                # PRIORITY 2: Fetch from API if cache not available (slower, for old data)
                 try:
-                    from resolver import get_company_bundle
-                    entity_bundle = get_company_bundle(company_number)
+                    # Check for cached data in shareholder node
+                    cached_officers = sh.get("officers", {})
+                    cached_pscs = sh.get("pscs", {})
+                    
+                    if cached_officers or cached_pscs:
+                        # Use cached data (fast path - no API calls!)
+                        print(f"   ✅ Using cached officers/PSCs for {sh_name} (no API call)")
+                        officers_data = cached_officers
+                        pscs_data = cached_pscs
+                    else:
+                        # Fallback: Fetch from API (slow path - for old data before caching was added)
+                        print(f"   ⚠️  No cached data for {sh_name}, fetching from API (consider re-enriching)")
+                        from resolver import get_company_bundle
+                        entity_bundle = get_company_bundle(company_number)
+                        officers_data = entity_bundle.get("officers", {})
+                        pscs_data = entity_bundle.get("pscs", {})
                     
                     # Extract officers (directors, secretaries, etc.)
-                    officers_data = entity_bundle.get("officers", {})
                     officers_items = officers_data.get("items", [])
                     
                     for officer in officers_items:
@@ -2999,7 +3014,7 @@ def build_screening_list(bundle: dict, shareholders: list, item: dict) -> dict:
                         })
                     
                     # Extract PSCs (Persons with Significant Control)
-                    pscs_data = entity_bundle.get("pscs", {})
+                    # pscs_data already set above (either from cache or API call)
                     pscs_items = pscs_data.get("items", [])
                     
                     for psc in pscs_items:

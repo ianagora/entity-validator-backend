@@ -385,6 +385,22 @@ def build_ownership_tree(
                     shareholder_info['company_number'] = child_company_number
                     shareholder_info['company_status'] = company_search.get('company_status', '')
                     
+                    # CACHE officers and PSCs for this corporate shareholder
+                    # This allows build_screening_list() to use cached data instead of making API calls
+                    print(f"{indent}     📦 Caching officers/PSCs for screening list...")
+                    try:
+                        from resolver import get_company_bundle
+                        entity_bundle = get_company_bundle(child_company_number)
+                        shareholder_info['officers'] = entity_bundle.get('officers', {})
+                        shareholder_info['pscs'] = entity_bundle.get('pscs', {})
+                        shareholder_info['profile'] = entity_bundle.get('profile', {})
+                        print(f"{indent}        ✅ Cached {len(entity_bundle.get('officers', {}).get('items', []))} officers, {len(entity_bundle.get('pscs', {}).get('items', []))} PSCs")
+                    except Exception as cache_error:
+                        print(f"{indent}        ⚠️  Failed to cache officers/PSCs: {cache_error}")
+                        shareholder_info['officers'] = {}
+                        shareholder_info['pscs'] = {}
+                        shareholder_info['profile'] = {}
+                    
                     # Recursively get shareholders of this company
                     print(f"{indent}     🔄 Recursing into: {child_company_name}")
                     try:
