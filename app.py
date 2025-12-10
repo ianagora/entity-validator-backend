@@ -3061,7 +3061,7 @@ def build_screening_list(bundle: dict, shareholders: list, item: dict) -> dict:
                     category = "Individual Shareholders <10%"
                 
                 # Extract DOB/nationality if available from shareholder data
-                # (May come from PSC register or officer data if they're also an officer)
+                # Priority 1: From shareholder node itself (if already enriched)
                 nationality = sh.get("nationality")
                 dob = None
                 if sh.get("date_of_birth"):
@@ -3069,6 +3069,21 @@ def build_screening_list(bundle: dict, shareholders: list, item: dict) -> dict:
                     year = sh.get("date_of_birth", {}).get("year")
                     if month and year:
                         dob = f"{month}/{year}"
+                
+                # Priority 2: Cross-reference with officers/PSCs already extracted for parent company
+                # If this individual is also an officer/director, use their officer data
+                if not nationality or not dob:
+                    # Check if we've already added this person as an officer/PSC in current iteration
+                    for existing_entry in screening["ownership_chain"]:
+                        if (existing_entry.get("name", "").upper() == sh_name.upper() and 
+                            not existing_entry.get("is_company") and
+                            existing_entry.get("depth") == depth):
+                            # Found matching officer/PSC entry - use their data
+                            if not nationality and existing_entry.get("nationality"):
+                                nationality = existing_entry.get("nationality")
+                            if not dob and existing_entry.get("dob"):
+                                dob = existing_entry.get("dob")
+                            break
                 
                 screening["ownership_chain"].append({
                     "name": sh_name,
