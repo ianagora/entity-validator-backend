@@ -906,13 +906,25 @@ def search_companies_house(company_name: str, items_per_page: int = 5) -> List[D
     }
     
     try:
-        resp = SESSION.get(url, params=params, auth=AUTH_CH, timeout=REQ_TIMEOUT)
+        # Retry with exponential backoff on 429 errors
+        max_retries = 3
+        retry_delays = [BACKOFF, BACKOFF * 2, BACKOFF * 4]  # 1.5s, 3s, 6s
         
-        # Retry once on 429 (rate limiting) with backoff
-        if resp.status_code == 429:
-            print(f"[CH Search] ⚠️  Rate limited (429), retrying after {BACKOFF}s...", flush=True)
-            time.sleep(BACKOFF)
+        for attempt in range(max_retries + 1):
             resp = SESSION.get(url, params=params, auth=AUTH_CH, timeout=REQ_TIMEOUT)
+            
+            if resp.status_code == 429:
+                if attempt < max_retries:
+                    delay = retry_delays[attempt]
+                    print(f"[CH Search] ⚠️  Rate limited (429), retry {attempt + 1}/{max_retries} after {delay}s...", flush=True)
+                    time.sleep(delay)
+                else:
+                    # Last attempt failed, raise the error
+                    print(f"[CH Search] ❌ Rate limit persists after {max_retries} retries", flush=True)
+                    resp.raise_for_status()
+            else:
+                # Success or other error
+                break
         
         resp.raise_for_status()
         data = resp.json()
