@@ -489,17 +489,14 @@ def get_cs01_filings_for_company(company_number: str) -> List[dict]:
                     print(f"Warning: Could not get details for CS01 filing {transaction_id}: {e}")
                     continue
 
-    # Sort filings: "with updates" first, then "with no updates"
-    # This optimizes shareholder extraction by checking meaningful filings first
+    # Sort filings by date (most recent first) to ensure latest shareholder data
+    # CRITICAL: Always use the MOST RECENT CS01 with shareholders to avoid outdated data
+    # Example: MEI MEI (LIVERPOOL) - should use 2024 CS01 (1 shareholder), not older 2023 AR01 (2 shareholders)
     def sort_key(filing):
-        description = filing.get("description", "").lower()
-        # Priority 0: Has updates (process first)
-        if "with updates" in description or "made statement" in description:
-            return (0, filing.get("date", ""))
-        # Priority 1: No updates or unclear (process after)
-        return (1, filing.get("date", ""))
+        # Sort by date only (most recent first) to get latest shareholder information
+        return filing.get("date", "")
     
-    cs01_filings.sort(key=sort_key, reverse=True)  # Sort by priority, then by date (most recent first)
+    cs01_filings.sort(key=sort_key, reverse=True)  # Sort by date (most recent first)
     
     return cs01_filings
 
@@ -539,14 +536,9 @@ def get_ar01_filings_for_company(company_number: str) -> List[dict]:
                     print(f"Warning: Could not get details for AR01 filing {transaction_id}: {e}")
                     continue
 
-    # Sort filings: "with updates" first, then "with no updates"
-    def sort_key(filing):
-        description = filing.get("description", "").lower()
-        if "with updates" in description or "made statement" in description:
-            return (0, filing.get("date", ""))
-        return (1, filing.get("date", ""))
-    
-    ar01_filings.sort(key=sort_key, reverse=True)
+    # Sort filings by date (most recent first) to ensure latest shareholder data
+    # Same logic as CS01: Always use the MOST RECENT AR01 with shareholders
+    ar01_filings.sort(key=lambda f: f.get("date", ""), reverse=True)
     
     return ar01_filings
 
