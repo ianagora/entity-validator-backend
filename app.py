@@ -3040,6 +3040,16 @@ def build_screening_list(bundle: dict, shareholders: list, item: dict) -> dict:
                 else:
                     category = "Individual Shareholders <10%"
                 
+                # Extract DOB/nationality if available from shareholder data
+                # (May come from PSC register or officer data if they're also an officer)
+                nationality = sh.get("nationality")
+                dob = None
+                if sh.get("date_of_birth"):
+                    month = sh.get("date_of_birth", {}).get("month")
+                    year = sh.get("date_of_birth", {}).get("year")
+                    if month and year:
+                        dob = f"{month}/{year}"
+                
                 screening["ownership_chain"].append({
                     "name": sh_name,
                     "role": "Individual Shareholder",
@@ -3048,7 +3058,9 @@ def build_screening_list(bundle: dict, shareholders: list, item: dict) -> dict:
                     "is_company": False,
                     "company_number": None,
                     "category": category,
-                    "depth": depth
+                    "depth": depth,
+                    "nationality": nationality,
+                    "dob": dob
                 })
             
             # UBOs - Individuals with ≥10% indirect ownership
@@ -3075,8 +3087,12 @@ def build_screening_list(bundle: dict, shareholders: list, item: dict) -> dict:
                     "depth": depth
                 })
             
-            # Recurse into children
+            # Recurse into nested shareholders (for corporate shareholders with their own shareholders)
+            # Corporate shareholder nodes have 'children' field OR 'shareholders' field
             if sh.get("children"):
+                extract_ownership_chain(sh, depth + 1)
+            elif sh.get("shareholders") and is_company:
+                # If this is a company with shareholders (not children), recurse into it
                 extract_ownership_chain(sh, depth + 1)
     
     # Start extraction from root
