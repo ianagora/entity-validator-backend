@@ -2945,24 +2945,14 @@ def build_screening_list(bundle: dict, shareholders: list, item: dict) -> dict:
                     "depth": depth
                 })
                 
-                # TEMPORARY PERFORMANCE FIX: Skip synchronous API calls for officers/PSCs
-                # This was causing 20-40+ second page load times when viewing items
-                # with deep ownership structures (10-20+ API calls per page view)
-                #
-                # PROPER FIX NEEDED: Pre-compute officers/PSCs during enrichment and cache
-                # in ownership_tree_json, then read from cache here (no API calls)
-                #
-                # For now: Just add the corporate shareholder entity itself to screening list
-                # Officers/PSCs of corporate shareholders will be added in future update
-                
-                # Check if this shareholder node has cached officers/PSCs data
-                # (will be available after we implement pre-computing during enrichment)
-                cached_officers = sh.get("officers", {})
-                cached_pscs = sh.get("pscs", {})
-                
-                if cached_officers or cached_pscs:
-                    # Use cached data (no API call needed!)
-                    officers_items = cached_officers.get("items", [])
+                # Fetch officers and PSCs for this company
+                try:
+                    from resolver import get_company_bundle
+                    entity_bundle = get_company_bundle(company_number)
+                    
+                    # Extract officers (directors, secretaries, etc.)
+                    officers_data = entity_bundle.get("officers", {})
+                    officers_items = officers_data.get("items", [])
                     
                     for officer in officers_items:
                         officer_name = officer.get("name", "Unknown")
@@ -3008,8 +2998,9 @@ def build_screening_list(bundle: dict, shareholders: list, item: dict) -> dict:
                             "dob": dob
                         })
                     
-                    # Extract PSCs from cached data
-                    pscs_items = cached_pscs.get("items", [])
+                    # Extract PSCs (Persons with Significant Control)
+                    pscs_data = entity_bundle.get("pscs", {})
+                    pscs_items = pscs_data.get("items", [])
                     
                     for psc in pscs_items:
                         psc_name = psc.get("name", "Unknown")
@@ -3033,11 +3024,10 @@ def build_screening_list(bundle: dict, shareholders: list, item: dict) -> dict:
                             "depth": depth,
                             "natures_of_control": natures
                         })
-                else:
-                    # No cached data available (old data format or not yet implemented)
-                    # Log but don't make API call (performance fix)
-                    if depth == 0:  # Only log for direct shareholders to avoid spam
-                        print(f"⚠️  No cached officers/PSCs for {company_number} ({sh_name}) - consider re-enriching this item")
+                    
+                except Exception as e:
+                    # Log error but continue processing
+                    print(f"Error fetching officers/PSCs for {company_number}: {e}")
             
             # Individual shareholders - include ALL individuals from ownership tree
             # (Not just ≥10%, as they may be significant in nested structures)
