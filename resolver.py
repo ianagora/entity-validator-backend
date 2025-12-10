@@ -907,6 +907,13 @@ def search_companies_house(company_name: str, items_per_page: int = 5) -> List[D
     
     try:
         resp = SESSION.get(url, params=params, auth=AUTH_CH, timeout=REQ_TIMEOUT)
+        
+        # Retry once on 429 (rate limiting) with backoff
+        if resp.status_code == 429:
+            print(f"[CH Search] ⚠️  Rate limited (429), retrying after {BACKOFF}s...", flush=True)
+            time.sleep(BACKOFF)
+            resp = SESSION.get(url, params=params, auth=AUTH_CH, timeout=REQ_TIMEOUT)
+        
         resp.raise_for_status()
         data = resp.json()
         
