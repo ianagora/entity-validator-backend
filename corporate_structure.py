@@ -267,6 +267,34 @@ def build_ownership_tree(
                     for idx, sh in enumerate(all_shareholders, 1):
                         print(f"{indent}      {idx}. {sh.get('name', 'N/A')} - {sh.get('shares_held', 'N/A')} shares ({sh.get('percentage', 0)}%)")
                 
+                # Enrich individual shareholders with DoB/nationality from PSC register
+                # This is critical for UBOs who are shareholders but whose DoB comes from PSC data
+                if all_shareholders and bundle and bundle.get("pscs"):
+                    psc_data = bundle.get("pscs", {})
+                    pscs = psc_data.get("items", [])
+                    if pscs:
+                        print(f"{indent}🔍 Enriching {len(all_shareholders)} shareholders with PSC data...")
+                        for shareholder in all_shareholders:
+                            sh_name = shareholder.get("name", "").upper().strip()
+                            # Skip if shareholder is a company
+                            if shareholder.get("is_company") or is_company_name(sh_name):
+                                continue
+                            # Skip if already has DoB
+                            if shareholder.get("date_of_birth") or shareholder.get("dob"):
+                                continue
+                            
+                            # Try to match with PSC
+                            for psc in pscs:
+                                psc_name = psc.get("name", "").upper().strip()
+                                # Simple name matching (could be improved with fuzzy matching)
+                                if sh_name == psc_name or sh_name in psc_name or psc_name in sh_name:
+                                    # Only enrich individuals, not corporate PSCs
+                                    if psc.get("kind") != "corporate-entity-person-with-significant-control":
+                                        shareholder["date_of_birth"] = psc.get("date_of_birth")
+                                        shareholder["nationality"] = psc.get("nationality")
+                                        print(f"{indent}   ✅ Enriched {sh_name[:30]}... with DoB from PSC")
+                                        break
+                
                 # If no shareholders found in filings, fall back to PSC register
                 if len(all_shareholders) == 0:
                     print(f"{indent}📊 No shareholders in filings, trying PSC fallback...")
