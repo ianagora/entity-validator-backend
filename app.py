@@ -3105,7 +3105,9 @@ def build_screening_list(bundle: dict, shareholders: list, item: dict) -> dict:
                     "indirect_ownership": True,
                     "category": "Individuals ≥10% indirect ownership",
                     "description": "Multiply percentages across layers to compute indirect control",
-                    "depth": depth
+                    "depth": depth,
+                    "nationality": nationality,
+                    "dob": dob
                 })
             
             # UBOs with control but no ownership (golden shares, veto rights, etc.)
@@ -3116,7 +3118,9 @@ def build_screening_list(bundle: dict, shareholders: list, item: dict) -> dict:
                     "shareholding": "No ownership disclosed",
                     "category": "Individuals with control but no ownership",
                     "description": "Golden share, veto rights, dominant creditor",
-                    "depth": depth
+                    "depth": depth,
+                    "nationality": nationality,
+                    "dob": dob
                 })
             
             # Recurse into nested shareholders (for corporate shareholders with their own shareholders)
