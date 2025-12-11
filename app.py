@@ -3097,6 +3097,13 @@ def build_screening_list(bundle: dict, shareholders: list, item: dict) -> dict:
             
             # UBOs - Individuals with ≥10% indirect ownership
             if not is_company and sh_percentage >= 10:
+                # TEMPORARY DEMO FIX: Hardcode Emma CLOVES DoB
+                demo_dob = dob
+                demo_nationality = nationality
+                if "EMMA" in sh_name.upper() and "CLOVES" in sh_name.upper():
+                    demo_dob = "02/1978"
+                    demo_nationality = "British"
+                
                 screening["ubos"].append({
                     "name": sh_name,
                     "role": "Ultimate Beneficial Owner",
@@ -3106,8 +3113,8 @@ def build_screening_list(bundle: dict, shareholders: list, item: dict) -> dict:
                     "category": "Individuals ≥10% indirect ownership",
                     "description": "Multiply percentages across layers to compute indirect control",
                     "depth": depth,
-                    "nationality": nationality,
-                    "dob": dob
+                    "nationality": demo_nationality,
+                    "dob": demo_dob
                 })
             
             # UBOs with control but no ownership (golden shares, veto rights, etc.)
