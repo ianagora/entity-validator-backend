@@ -2830,6 +2830,8 @@ def build_screening_list(bundle: dict, shareholders: list, item: dict) -> dict:
                 "name": officer.get("name", "Unknown"),
                 "role": officer.get("officer_role", "Secretary"),
                 "appointed_on": officer.get("appointed_on"),
+                "nationality": officer.get("nationality"),
+                "dob": f"{officer.get('date_of_birth', {}).get('month')}/{officer.get('date_of_birth', {}).get('year')}" if officer.get("date_of_birth") else None,
                 "category": "Company Secretary",
                 "description": "If appointed"
             })
@@ -2845,6 +2847,8 @@ def build_screening_list(bundle: dict, shareholders: list, item: dict) -> dict:
                 "kind": psc.get("kind", "Unknown"),
                 "natures_of_control": natures,
                 "notified_on": psc.get("notified_on"),
+                "nationality": psc.get("nationality"),
+                "dob": f"{psc.get('date_of_birth', {}).get('month')}/{psc.get('date_of_birth', {}).get('year')}" if psc.get("date_of_birth") else None,
                 "category": "PSCs",
                 "description": "Anyone meeting UK PSC criteria (>10% shares/votes or significant influence)"
             })
