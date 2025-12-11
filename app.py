@@ -2804,6 +2804,10 @@ def build_screening_list(bundle: dict, shareholders: list, item: dict) -> dict:
     officers_items = officers_data.get("items", [])
     for officer in officers_items:
         if officer.get("officer_role", "").lower() in ["director", "corporate-director", "shadow-director"]:
+            # Skip resigned officers
+            if officer.get("resigned_on"):
+                continue
+                
             screening["governance_and_control"].append({
                 "name": officer.get("name", "Unknown"),
                 "role": officer.get("officer_role", "Director"),
@@ -2818,6 +2822,10 @@ def build_screening_list(bundle: dict, shareholders: list, item: dict) -> dict:
     # Company Secretary
     for officer in officers_items:
         if officer.get("officer_role", "").lower() in ["secretary", "corporate-secretary"]:
+            # Skip resigned officers
+            if officer.get("resigned_on"):
+                continue
+                
             screening["governance_and_control"].append({
                 "name": officer.get("name", "Unknown"),
                 "role": officer.get("officer_role", "Secretary"),
