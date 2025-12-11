@@ -285,14 +285,46 @@ def build_ownership_tree(
                             
                             # Try to match with PSC
                             for psc in pscs:
-                                psc_name = psc.get("name", "").upper().strip()
-                                # Simple name matching (could be improved with fuzzy matching)
-                                if sh_name == psc_name or sh_name in psc_name or psc_name in sh_name:
-                                    # Only enrich individuals, not corporate PSCs
+                                psc_name_raw = psc.get("name", "").upper().strip()
+                                
+                                # Normalize names for matching:
+                                # Remove titles (MR, MRS, MS, MISS, DR, etc.)
+                                # Remove middle names by comparing first + last name only
+                                titles = ['MR ', 'MRS ', 'MS ', 'MISS ', 'DR ', 'PROF ', 'SIR ', 'LADY ', 'LORD ']
+                                psc_name_normalized = psc_name_raw
+                                for title in titles:
+                                    if psc_name_normalized.startswith(title):
+                                        psc_name_normalized = psc_name_normalized[len(title):].strip()
+                                        break
+                                
+                                # Extract first and last name from both
+                                # Shareholder: "EMMA CLOVES" -> first="EMMA", last="CLOVES"
+                                # PSC: "EMMA LOUISE CLOVES" -> first="EMMA", last="CLOVES"
+                                sh_parts = sh_name.split()
+                                psc_parts = psc_name_normalized.split()
+                                
+                                if len(sh_parts) >= 2 and len(psc_parts) >= 2:
+                                    # Compare first name and last name
+                                    sh_first = sh_parts[0]
+                                    sh_last = sh_parts[-1]
+                                    psc_first = psc_parts[0]
+                                    psc_last = psc_parts[-1]
+                                    
+                                    # Match if first and last names match
+                                    if sh_first == psc_first and sh_last == psc_last:
+                                        # Only enrich individuals, not corporate PSCs
+                                        if psc.get("kind") != "corporate-entity-person-with-significant-control":
+                                            shareholder["date_of_birth"] = psc.get("date_of_birth")
+                                            shareholder["nationality"] = psc.get("nationality")
+                                            print(f"{indent}   ✅ Enriched '{sh_name}' with DoB from PSC '{psc_name_raw}'")
+                                            break
+                                
+                                # Fallback: exact match or substring match
+                                elif sh_name == psc_name_normalized or sh_name in psc_name_normalized:
                                     if psc.get("kind") != "corporate-entity-person-with-significant-control":
                                         shareholder["date_of_birth"] = psc.get("date_of_birth")
                                         shareholder["nationality"] = psc.get("nationality")
-                                        print(f"{indent}   ✅ Enriched {sh_name[:30]}... with DoB from PSC")
+                                        print(f"{indent}   ✅ Enriched '{sh_name}' with DoB from PSC '{psc_name_raw}'")
                                         break
                 
                 # If no shareholders found in filings, fall back to PSC register
