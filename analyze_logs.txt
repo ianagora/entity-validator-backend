@@ -1,0 +1,11 @@
+The logs show:
+
+For UNITED KENNING RENTAL GROUP LTD (02942541):
+- ⚠️ WARNING: OpenAI returned empty shareholders list despite 8821 chars of text
+- ❌ Regex extraction found no shareholders
+
+But I don't see the expected debug output:
+- "📋 DEBUG: OCR text sample (first 3000 chars): ..."
+- "📊 DEBUG: Found X 'Shareholding' entries but regex only matched Y"
+
+This suggests the debug logging we added in commit d5886b9 is NOT actually running!
