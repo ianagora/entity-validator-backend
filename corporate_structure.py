@@ -83,46 +83,53 @@ def is_company_name(name: str) -> bool:
     return False
 
 
+def get_country_from_suffix(company_name: str) -> Optional[str]:
+    """
+    Detect country from company legal suffix
+    Returns country name if detected, None otherwise
+    """
+    name_upper = company_name.upper().strip()
+    
+    # Suffix to country mapping
+    suffix_country_map = {
+        'B.V.': 'NETHERLANDS',
+        'N.V.': 'NETHERLANDS',
+        'GMBH': 'GERMANY',
+        'AG': 'GERMANY',  # Could also be Switzerland, but Germany more common
+        'S.A.': 'FRANCE',  # Could also be Spain/Belgium
+        'S.A.R.L.': 'FRANCE',
+        'SARL': 'FRANCE',
+        'S.R.L.': 'ITALY',
+        'SRL': 'ITALY',
+        'S.P.A.': 'ITALY',
+        'SPA': 'ITALY',
+        'A.S.': 'DENMARK',  # Could also be Norway
+        'AB': 'SWEDEN',
+        'OY': 'FINLAND',
+        'LLC': 'USA',
+        'INC.': 'USA',
+        'CORP.': 'USA',
+        'PTY LTD': 'AUSTRALIA',
+    }
+    
+    for suffix, country in suffix_country_map.items():
+        if name_upper.endswith(' ' + suffix) or name_upper.endswith(suffix):
+            return country
+        if ' ' + suffix + ' ' in name_upper:
+            return country
+    
+    return None
+
+
 def is_foreign_company(company_name: str) -> bool:
     """
     Detect if a company is foreign (non-UK) based on legal suffixes
     Returns True if company appears to be registered outside the UK
     """
-    name_upper = company_name.upper().strip()
-    
-    # European and International Company Suffixes
-    foreign_suffixes = [
-        'B.V.',      # Netherlands: Besloten Vennootschap
-        'N.V.',      # Netherlands: Naamloze Vennootschap
-        'GMBH',      # Germany: Gesellschaft mit beschränkter Haftung
-        'AG',        # Germany/Switzerland: Aktiengesellschaft
-        'S.A.',      # France/Spain/Belgium: Société Anonyme / Sociedad Anónima
-        'S.A.R.L.',  # France: Société à responsabilité limitée
-        'S.R.L.',    # Italy/Romania: Società a responsabilità limitata
-        'S.P.A.',    # Italy: Società per Azioni
-        'A.S.',      # Denmark/Norway: Aktieselskab / Aksjeselskap
-        'AB',        # Sweden: Aktiebolag
-        'OY',        # Finland: Osakeyhtiö
-        'LLC',       # US: Limited Liability Company
-        'INC.',      # US: Incorporated
-        'CORP.',     # US: Corporation
-        'PTY LTD',   # Australia: Proprietary Limited
-        'LTD.',      # Could be UK, but check context
-        'SARL',      # France (without periods)
-        'SRL',       # Italy/Romania (without periods)
-        'SPA',       # Italy (without periods)
-    ]
-    
-    for suffix in foreign_suffixes:
-        # Check if name ends with suffix (with or without periods)
-        if name_upper.endswith(' ' + suffix):
-            print(f"  🌍 Foreign company detected: {company_name} (suffix: {suffix})")
-            return True
-        # Also check for suffix anywhere in name (for cases like "COMPANY B.V. HOLDINGS")
-        if ' ' + suffix + ' ' in name_upper or name_upper.endswith(suffix):
-            print(f"  🌍 Foreign company detected: {company_name} (contains: {suffix})")
-            return True
-    
+    country = get_country_from_suffix(company_name)
+    if country:
+        print(f"  🌍 Foreign company detected: {company_name} ({country})")
+        return True
     return False
 
 
@@ -565,6 +572,7 @@ def build_ownership_tree(
                     
                     shareholder_info['company_number'] = child_company_number
                     shareholder_info['company_status'] = company_search.get('company_status', '')
+                    shareholder_info['country'] = 'UNITED KINGDOM'  # Companies House = UK companies
                     
                     # CACHE officers and PSCs for this corporate shareholder
                     # This allows build_screening_list() to use cached data instead of making API calls
@@ -612,6 +620,12 @@ def build_ownership_tree(
                 else:
                     print(f"{indent}     ⚠️  Could not find company in Companies House")
                     shareholder_info['search_failed'] = True
+                    
+                    # If foreign company, add country information
+                    country = get_country_from_suffix(shareholder_name)
+                    if country:
+                        shareholder_info['country'] = country
+                        print(f"{indent}     🌍 Country detected: {country}")
             else:
                 print(f"{indent}     👤 Individual shareholder")
             

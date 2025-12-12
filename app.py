@@ -2936,7 +2936,9 @@ def build_screening_list(bundle: dict, shareholders: list, item: dict) -> dict:
             company_number = sh.get("company_number")
             
             # Add the entity itself to ownership_chain
-            if is_company and company_number:
+            # CRITICAL FIX: Include foreign companies (is_company=True) even without company_number
+            # Foreign companies (e.g., "HERTZ HOLDINGS NETHERLANDS 2 B.V.") need screening too
+            if is_company:
                 # Determine category based on depth
                 if depth == 0:
                     category = "Corporate Shareholders"
@@ -2951,18 +2953,35 @@ def build_screening_list(bundle: dict, shareholders: list, item: dict) -> dict:
                     category = "Ultimate Parent Companies"
                     role = "Ultimate Parent Company"
                 
-                screening["ownership_chain"].append({
+                screening_entry = {
                     "name": sh_name,
                     "role": role,
                     "shareholding": f"{sh_percentage}%",
                     "shares_held": sh_shares,
                     "is_company": True,
-                    "company_number": company_number,
                     "category": category,
                     "depth": depth
-                })
+                }
                 
-                # Get officers and PSCs for this company
+                # Add company_number only if it exists (UK companies)
+                if company_number:
+                    screening_entry["company_number"] = company_number
+                
+                # Add country if available (UK or foreign)
+                country = sh.get("country")
+                if country:
+                    screening_entry["country"] = country
+                
+                screening["ownership_chain"].append(screening_entry)
+                
+                # Get officers and PSCs for this company (only for UK companies with company_number)
+                # Foreign companies don't have UK company numbers, so skip officer/PSC fetching
+                if not company_number:
+                    print(f"   🌍 Foreign company {sh_name} - skipping officers/PSCs (no UK company number)")
+                    # Still recurse into children if any
+                    extract_ownership_chain(sh, depth + 1)
+                    continue
+                
                 # PRIORITY 1: Use cached data from ownership tree (fast, no API calls)
                 # PRIORITY 2: Fetch from API if cache not available (slower, for old data)
                 try:
