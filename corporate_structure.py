@@ -83,11 +83,59 @@ def is_company_name(name: str) -> bool:
     return False
 
 
+def is_foreign_company(company_name: str) -> bool:
+    """
+    Detect if a company is foreign (non-UK) based on legal suffixes
+    Returns True if company appears to be registered outside the UK
+    """
+    name_upper = company_name.upper().strip()
+    
+    # European and International Company Suffixes
+    foreign_suffixes = [
+        'B.V.',      # Netherlands: Besloten Vennootschap
+        'N.V.',      # Netherlands: Naamloze Vennootschap
+        'GMBH',      # Germany: Gesellschaft mit beschränkter Haftung
+        'AG',        # Germany/Switzerland: Aktiengesellschaft
+        'S.A.',      # France/Spain/Belgium: Société Anonyme / Sociedad Anónima
+        'S.A.R.L.',  # France: Société à responsabilité limitée
+        'S.R.L.',    # Italy/Romania: Società a responsabilità limitata
+        'S.P.A.',    # Italy: Società per Azioni
+        'A.S.',      # Denmark/Norway: Aktieselskab / Aksjeselskap
+        'AB',        # Sweden: Aktiebolag
+        'OY',        # Finland: Osakeyhtiö
+        'LLC',       # US: Limited Liability Company
+        'INC.',      # US: Incorporated
+        'CORP.',     # US: Corporation
+        'PTY LTD',   # Australia: Proprietary Limited
+        'LTD.',      # Could be UK, but check context
+        'SARL',      # France (without periods)
+        'SRL',       # Italy/Romania (without periods)
+        'SPA',       # Italy (without periods)
+    ]
+    
+    for suffix in foreign_suffixes:
+        # Check if name ends with suffix (with or without periods)
+        if name_upper.endswith(' ' + suffix):
+            print(f"  🌍 Foreign company detected: {company_name} (suffix: {suffix})")
+            return True
+        # Also check for suffix anywhere in name (for cases like "COMPANY B.V. HOLDINGS")
+        if ' ' + suffix + ' ' in name_upper or name_upper.endswith(suffix):
+            print(f"  🌍 Foreign company detected: {company_name} (contains: {suffix})")
+            return True
+    
+    return False
+
+
 def search_company_by_name(company_name: str) -> Optional[Dict[str, Any]]:
     """
     Search Companies House for a company by name
-    Returns company number if found
+    Returns company number if found, or None for foreign companies
     """
+    # CRITICAL: Check if this is a foreign company first
+    if is_foreign_company(company_name):
+        print(f"  ⚠️  Foreign company detected, skipping Companies House search: {company_name}")
+        return None
+    
     try:
         print(f"  🔍 Searching Companies House for: {company_name}", flush=True)
         results = search_companies_house(company_name)
