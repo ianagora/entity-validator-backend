@@ -3049,32 +3049,23 @@ def build_screening_list(bundle: dict, shareholders: list, item: dict) -> dict:
                             "dob": dob
                         })
                     
-                    # Extract PSCs (Persons with Significant Control)
-                    # pscs_data already set above (either from cache or API call)
-                    pscs_items = pscs_data.get("items", [])
-                    
-                    for psc in pscs_items:
-                        psc_name = psc.get("name", "Unknown")
-                        natures = psc.get("natures_of_control", [])
-                        ceased_on = psc.get("ceased_on")
-                        
-                        # Skip ceased PSCs
-                        if ceased_on:
-                            continue
-                        
-                        # Build natures description
-                        natures_str = ", ".join(natures) if natures else "Significant control"
-                        
-                        screening["ownership_chain"].append({
-                            "name": psc_name,
-                            "role": "PSC",
-                            "shareholding": natures_str,
-                            "is_company": psc.get("kind") == "corporate-entity-person-with-significant-control",
-                            "company_number": company_number,
-                            "category": f"PSCs of {sh_name}",
-                            "depth": depth,
-                            "natures_of_control": natures
-                        })
+                    # REMOVED: PSCs of parent companies
+                    # Reasoning: PSCs are only required for the TARGET company, not for parent companies
+                    # Including PSCs of parents creates indirect relationships (e.g., "Hertz Global Holdings Inc."
+                    # is a PSC of the parent "HERTZ HOLDINGS III UK LIMITED", but not directly related to
+                    # the target "HERTZ (U.K.) LIMITED")
+                    # 
+                    # If needed for specific regulatory requirements, this can be re-enabled with a flag
+                    # 
+                    # Original code (now disabled):
+                    # pscs_items = pscs_data.get("items", [])
+                    # for psc in pscs_items:
+                    #     screening["ownership_chain"].append({
+                    #         "name": psc.get("name"),
+                    #         "role": "PSC",
+                    #         "category": f"PSCs of {sh_name}",
+                    #         ...
+                    #     })
                     
                 except Exception as e:
                     # Log error but continue processing
