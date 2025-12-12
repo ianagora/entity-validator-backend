@@ -3603,11 +3603,14 @@ async def export_screening_list_csv(item_id: int):
             })
         
         # Deduplicate entries by name and category to avoid duplicate screening
+        # Use canonicalise_name to properly normalize company names (strips Ltd/Limited/etc)
         seen = set()
         unique_entries = []
         for entry in all_entries:
-            # Create unique key based on name and category
-            key = (entry.get('Name', '').strip().lower(), entry.get('Category', ''))
+            # Create unique key based on canonicalized name and category
+            raw_name = entry.get('Name', '').strip()
+            canonical_name = canonicalise_name(raw_name)
+            key = (canonical_name, entry.get('Category', ''))
             if key not in seen:
                 seen.add(key)
                 unique_entries.append(entry)
