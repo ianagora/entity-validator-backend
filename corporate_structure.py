@@ -17,15 +17,40 @@ def is_company_name(name: str) -> bool:
     
     name_lower = name.lower().strip()
     
-    # Company suffixes
+    # Company suffixes (UK, US, and European)
     company_suffixes = [
+        # UK suffixes
         'limited', 'ltd', 'ltd.', 
         'plc', 'p.l.c.', 'public limited company',
         'llp', 'l.l.p.', 'limited liability partnership',
         'lp', 'l.p.', 'limited partnership',
+        # US suffixes
         'corporation', 'corp', 'corp.',
         'incorporated', 'inc', 'inc.',
         'company', 'co', 'co.',
+        # European suffixes
+        'se',  # Societas Europaea (European Company)
+        's.e.',
+        'sa',  # Société Anonyme (French/Spanish/Portuguese)
+        's.a.',
+        'sarl',  # Société à Responsabilité Limitée (French)
+        's.a.r.l.',
+        'gmbh',  # Gesellschaft mit beschränkter Haftung (German)
+        'ag',  # Aktiengesellschaft (German/Swiss/Austrian)
+        'a.g.',
+        'nv',  # Naamloze Vennootschap (Dutch/Belgian)
+        'n.v.',
+        'bv',  # Besloten Vennootschap (Dutch)
+        'b.v.',
+        'spa',  # Società per Azioni (Italian)
+        's.p.a.',
+        'srl',  # Società a Responsabilità Limitata (Italian)
+        's.r.l.',
+        'ab',  # Aktiebolag (Swedish)
+        'oy',  # Osakeyhtiö (Finnish)
+        'as',  # Aksjeselskap (Norwegian)
+        'a/s',  # Aktieselskab (Danish)
+        # Generic terms
         'holdings', 'holding',
         'group',
         'trust',
