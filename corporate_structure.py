@@ -98,19 +98,63 @@ def search_company_by_name(company_name: str) -> Optional[Dict[str, Any]]:
             print(f"  ❌ No results found for: {company_name}", flush=True)
             return None
         
-        # Get the best match (first result, usually most relevant)
-        best_match = results[0]
+        # Get the best match with improved logic
+        # Priority: 1) Active companies, 2) Exact name match, 3) Roman numeral fix, 4) First result
+        
+        active_matches = [r for r in results if r.get('company_status', '').lower() == 'active']
+        candidates = active_matches if active_matches else results
+        
+        # First try exact match (case-insensitive)
+        search_lower = company_name.lower().strip()
+        for candidate in candidates:
+            candidate_name = candidate.get('title', '').lower().strip()
+            if search_lower == candidate_name:
+                print(f"  ✅ EXACT match: {candidate.get('title')} ({candidate.get('company_number')})")
+                return {
+                    'company_number': candidate.get('company_number'),
+                    'company_name': candidate.get('title', ''),
+                    'company_status': candidate.get('company_status', ''),
+                    'match_quality': 'exact'
+                }
+        
+        # Check for Roman numeral confusion (ITI vs III, IVI vs IV, etc.)
+        # Common OCR errors: ITI (should be III), IVI (should be IV), I I I (should be III)
+        roman_fixes = [
+            (' ITI ', ' III '),  # Most common: ITI -> III
+            (' IVI ', ' IV '),
+            (' I I I ', ' III '),
+            (' I I ', ' II '),
+        ]
+        
+        for old_pattern, new_pattern in roman_fixes:
+            if old_pattern in search_lower:
+                fixed_search = search_lower.replace(old_pattern, new_pattern)
+                print(f"  🔧 Trying Roman numeral fix: '{old_pattern.strip()}' -> '{new_pattern.strip()}'")
+                
+                for candidate in candidates:
+                    candidate_name = candidate.get('title', '').lower().strip()
+                    if fixed_search == candidate_name:
+                        print(f"  ✅ ROMAN NUMERAL match: {candidate.get('title')} ({candidate.get('company_number')})")
+                        return {
+                            'company_number': candidate.get('company_number'),
+                            'company_name': candidate.get('title', ''),
+                            'company_status': candidate.get('company_status', ''),
+                            'match_quality': 'roman_numeral_fix'
+                        }
+        
+        # Fallback: Use first result (original behavior)
+        best_match = candidates[0]
         company_number = best_match.get('company_number')
         company_name_found = best_match.get('title', '')
         company_status = best_match.get('company_status', '')
         
-        print(f"  ✅ Found: {company_name_found} ({company_number}) - {company_status}", flush=True)
+        print(f"  ⚠️  Using first result: {company_name_found} ({company_number}) - {company_status}", flush=True)
         
         return {
             'company_number': company_number,
             'company_name': company_name_found,
             'company_status': company_status,
-            'match_quality': 'exact' if company_name.lower() == company_name_found.lower() else 'partial'
+            'match_quality': 'first_result'
         }
         
     except Exception as e:
