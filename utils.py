@@ -1,6 +1,7 @@
 # utils.py
 from enum import Enum
 import pandas as pd
+import re
 
 class ReviewStatus(str, Enum):
     UNASSIGNED        = "Level {level} – Unassigned"
@@ -208,3 +209,91 @@ def derive_case_status(review: dict, _current_level=None) -> str:
                 return "Level 3 QC – In Progress"
 
     return "(Unclassified)"
+
+
+def normalize_name_frontend(name: str) -> str:
+    """
+    Normalize name using EXACT same logic as frontend (entity-validator-frontend/src/index.tsx)
+    This ensures CSV export matches the Consolidated Screening List display exactly.
+    
+    For companies:
+    - Uppercase
+    - Normalize legal suffixes (LIMITED → LTD, P.L.C → PLC, etc.)
+    - Replace & with AND
+    - Remove punctuation (keep only A-Z, 0-9, spaces)
+    - Remove extra whitespace
+    - Do NOT sort words (keep original order)
+    
+    For individuals:
+    - Uppercase
+    - Remove titles (Mr, Mrs, Dr, etc.)
+    - Handle "LASTNAME, Firstname" → "FIRSTNAME LASTNAME"
+    - Sort words alphabetically (handles name order variations)
+    """
+    if not name:
+        return ''
+    
+    # For companies: detect if name has legal suffixes (UK, US, European)
+    name_upper = name.upper()
+    company_suffixes = [
+        # UK/US
+        'LIMITED', 'LTD', 'PLC', 'P.L.C', 'LLP', 'L.L.P',
+        # European
+        ' SE', ' SA', ' AG', ' GMBH', ' NV', ' BV', ' SPA', ' SRL', ' AB', ' OY', ' AS'
+    ]
+    is_company = any(suffix in name_upper for suffix in company_suffixes)
+    
+    if is_company:
+        # Company normalization
+        normalized = name.strip().upper()
+        
+        # Normalize legal suffixes to standard forms BEFORE removing punctuation
+        # LIMITED → LTD
+        normalized = normalized.replace(' LIMITED', ' LTD')
+        if normalized.endswith(' LIMITED'):
+            normalized = normalized[:-8] + ' LTD'
+        if normalized == 'LIMITED':
+            normalized = 'LTD'
+        
+        # P.L.C → PLC, L.L.P → LLP (handle with spaces and dots)
+        normalized = normalized.replace(' P.L.C.', ' PLC').replace(' P.L.C', ' PLC')
+        normalized = normalized.replace(' L.L.P.', ' LLP').replace(' L.L.P', ' LLP')
+        # Also handle if they appear in the middle (rare but possible)
+        normalized = normalized.replace('P.L.C.', 'PLC').replace('P.L.C', 'PLC')
+        normalized = normalized.replace('L.L.P.', 'LLP').replace('L.L.P', 'LLP')
+        normalized = normalized.replace(' COMPANY', ' CO')
+        
+        # Replace & with AND before removing punctuation
+        normalized = normalized.replace('&', 'AND')
+        
+        # Remove punctuation - keep only A-Z, 0-9, and spaces
+        normalized = ''.join(c for c in normalized if c.isalnum() or c.isspace())
+        
+        # Remove extra whitespace
+        normalized = ' '.join(normalized.split())
+        
+        return normalized
+    
+    # For individuals: normalize name variations
+    normalized = name.strip().upper()
+    
+    # Remove titles (Mr, Mrs, Ms, Miss, Dr, Sir, Dame, Lord, Lady, Professor, Prof)
+    normalized = re.sub(r'^(MR|MRS|MS|MISS|DR|SIR|DAME|LORD|LADY|PROFESSOR|PROF)\.?\s+', '', normalized, flags=re.IGNORECASE)
+    
+    # Handle "LASTNAME, Firstname" format → "FIRSTNAME LASTNAME"
+    if ',' in normalized:
+        parts = [p.strip() for p in normalized.split(',')]
+        if len(parts) == 2:
+            # Reverse: "KHAN, HAROON" → "HAROON KHAN"
+            normalized = parts[1] + ' ' + parts[0]
+    
+    # Remove extra whitespace
+    normalized = re.sub(r'\s+', ' ', normalized).strip()
+    
+    # Sort words alphabetically for better matching
+    # This handles "HAROON KHAN" vs "KHAN HAROON"
+    words = normalized.split(' ')
+    words.sort()
+    normalized = ' '.join(words)
+    
+    return normalized
