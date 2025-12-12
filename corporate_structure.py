@@ -162,7 +162,7 @@ def get_country_from_suffix(company_name: str) -> Optional[str]:
         
         # Ireland
         'DAC': 'IRELAND',  # Designated Activity Company
-        'LTD': 'IRELAND',  # Also UK (ambiguous)
+        # NOTE: 'LTD' removed - too ambiguous with UK companies
         
         # USA
         'LLC': 'USA',
@@ -184,14 +184,14 @@ def get_country_from_suffix(company_name: str) -> Optional[str]:
         'PTY. LTD.': 'AUSTRALIA',
         
         # New Zealand
-        'LIMITED': 'NEW ZEALAND',  # Also UK (ambiguous)
+        # NOTE: 'LIMITED' removed - too ambiguous with UK companies
         
         # Singapore
         'PTE LTD': 'SINGAPORE',
         'PTE. LTD.': 'SINGAPORE',
         
         # Hong Kong
-        'LIMITED': 'HONG KONG',  # Also UK (ambiguous)
+        # NOTE: 'LIMITED' removed - too ambiguous with UK companies
         
         # Japan
         'K.K.': 'JAPAN',  # Kabushiki Kaisha
