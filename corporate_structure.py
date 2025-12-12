@@ -92,24 +92,129 @@ def get_country_from_suffix(company_name: str) -> Optional[str]:
     
     # Suffix to country mapping
     suffix_country_map = {
+        # Netherlands
         'B.V.': 'NETHERLANDS',
         'N.V.': 'NETHERLANDS',
+        
+        # Germany
         'GMBH': 'GERMANY',
-        'AG': 'GERMANY',  # Could also be Switzerland, but Germany more common
-        'S.A.': 'FRANCE',  # Could also be Spain/Belgium
+        'AG': 'GERMANY',  # Also Switzerland, Austria
+        'UG': 'GERMANY',  # Unternehmergesellschaft (mini-GmbH)
+        'KG': 'GERMANY',  # Kommanditgesellschaft
+        
+        # European Union
+        'SE': 'EUROPEAN UNION',  # Societas Europaea (European Company)
+        'SCE': 'EUROPEAN UNION',  # Societas Cooperativa Europaea
+        
+        # France
+        'S.A.': 'FRANCE',  # Also Spain, Belgium, Luxembourg
         'S.A.R.L.': 'FRANCE',
         'SARL': 'FRANCE',
+        'S.A.S.': 'FRANCE',  # Société par Actions Simplifiée
+        'SAS': 'FRANCE',
+        'S.C.A.': 'FRANCE',  # Société en Commandite par Actions
+        
+        # Italy
         'S.R.L.': 'ITALY',
         'SRL': 'ITALY',
         'S.P.A.': 'ITALY',
         'SPA': 'ITALY',
-        'A.S.': 'DENMARK',  # Could also be Norway
-        'AB': 'SWEDEN',
-        'OY': 'FINLAND',
+        
+        # Spain
+        'S.L.': 'SPAIN',  # Sociedad Limitada
+        'S.A.': 'SPAIN',  # Sociedad Anónima (ambiguous with France)
+        
+        # Belgium
+        'B.V.B.A.': 'BELGIUM',  # Besloten Vennootschap met Beperkte Aansprakelijkheid (old)
+        'S.P.R.L.': 'BELGIUM',  # Société Privée à Responsabilité Limitée (old)
+        'S.A./N.V.': 'BELGIUM',  # Bilingual
+        
+        # Luxembourg
+        'S.À R.L.': 'LUXEMBOURG',
+        'S.A.R.L.': 'LUXEMBOURG',  # Also France
+        
+        # Denmark / Norway
+        'A.S.': 'DENMARK',  # Aktieselskab (Denmark), Aksjeselskap (Norway)
+        'A/S': 'DENMARK',
+        'APS': 'DENMARK',  # Anpartsselskab
+        
+        # Sweden
+        'AB': 'SWEDEN',  # Aktiebolag
+        
+        # Finland
+        'OY': 'FINLAND',  # Osakeyhtiö
+        'OYJ': 'FINLAND',  # Julkinen Osakeyhtiö (public)
+        
+        # Switzerland
+        'SA': 'SWITZERLAND',  # Société Anonyme
+        'SARL': 'SWITZERLAND',  # Also France
+        
+        # Austria
+        'GMBH': 'AUSTRIA',  # Also Germany
+        
+        # Poland
+        'SP. Z O.O.': 'POLAND',  # Spółka z ograniczoną odpowiedzialnością
+        'S.A.': 'POLAND',  # Also France, Spain
+        
+        # Czech Republic
+        'S.R.O.': 'CZECH REPUBLIC',  # Společnost s ručením omezeným
+        'A.S.': 'CZECH REPUBLIC',  # Also Denmark
+        
+        # Ireland
+        'DAC': 'IRELAND',  # Designated Activity Company
+        'LTD': 'IRELAND',  # Also UK (ambiguous)
+        
+        # USA
         'LLC': 'USA',
         'INC.': 'USA',
+        'INC': 'USA',
         'CORP.': 'USA',
+        'CORP': 'USA',
+        'L.P.': 'USA',  # Limited Partnership
+        'LP': 'USA',
+        'L.L.P.': 'USA',  # Limited Liability Partnership
+        'LLP': 'USA',
+        
+        # Canada
+        'LTÉE': 'CANADA',  # Limitée (French)
+        'INC.': 'CANADA',  # Also USA
+        
+        # Australia
         'PTY LTD': 'AUSTRALIA',
+        'PTY. LTD.': 'AUSTRALIA',
+        
+        # New Zealand
+        'LIMITED': 'NEW ZEALAND',  # Also UK (ambiguous)
+        
+        # Singapore
+        'PTE LTD': 'SINGAPORE',
+        'PTE. LTD.': 'SINGAPORE',
+        
+        # Hong Kong
+        'LIMITED': 'HONG KONG',  # Also UK (ambiguous)
+        
+        # Japan
+        'K.K.': 'JAPAN',  # Kabushiki Kaisha
+        'KK': 'JAPAN',
+        'G.K.': 'JAPAN',  # Gōdō Kaisha
+        
+        # South Korea
+        'CO., LTD.': 'SOUTH KOREA',
+        
+        # China
+        'CO., LTD.': 'CHINA',
+        
+        # India
+        'PVT LTD': 'INDIA',
+        'PRIVATE LIMITED': 'INDIA',
+        
+        # UAE
+        'L.L.C.': 'UAE',
+        'LLC': 'UAE',  # Also USA (ambiguous)
+        
+        # South Africa
+        'PTY LTD': 'SOUTH AFRICA',  # Also Australia (ambiguous)
+        '(PTY) LTD': 'SOUTH AFRICA',
     }
     
     for suffix, country in suffix_country_map.items():
