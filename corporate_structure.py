@@ -302,20 +302,53 @@ def search_company_by_name(company_name: str) -> Optional[Dict[str, Any]]:
                             'match_quality': 'roman_numeral_fix'
                         }
         
-        # Fallback: Use first result (original behavior)
+        # Check if first result is similar enough to be a match
+        # Use similarity threshold to avoid false matches like "PROJECT ARDENT TOPCO LIMITED" -> "ARDENT PROJECTS LIMITED"
         best_match = candidates[0]
-        company_number = best_match.get('company_number')
-        company_name_found = best_match.get('title', '')
-        company_status = best_match.get('company_status', '')
+        best_match_name = best_match.get('title', '').lower().strip()
         
-        print(f"  ⚠️  Using first result: {company_name_found} ({company_number}) - {company_status}", flush=True)
+        # Calculate similarity score (simple word overlap)
+        search_words = set(search_lower.split())
+        match_words = set(best_match_name.split())
         
-        return {
-            'company_number': company_number,
-            'company_name': company_name_found,
-            'company_status': company_status,
-            'match_quality': 'first_result'
-        }
+        # Remove common words that don't help matching
+        stop_words = {'limited', 'ltd', 'plc', 'llp', 'lp', 'holdings', 'holding', 'group', 'company', 'co'}
+        search_words_filtered = search_words - stop_words
+        match_words_filtered = match_words - stop_words
+        
+        if search_words_filtered and match_words_filtered:
+            # Calculate Jaccard similarity (intersection over union)
+            intersection = len(search_words_filtered & match_words_filtered)
+            union = len(search_words_filtered | match_words_filtered)
+            similarity = intersection / union if union > 0 else 0
+            
+            print(f"  📊 Similarity score: {similarity:.2f} (threshold: 0.5)")
+            
+            # Require at least 50% word overlap to consider it a match
+            if similarity >= 0.5:
+                company_number = best_match.get('company_number')
+                company_name_found = best_match.get('title', '')
+                company_status = best_match.get('company_status', '')
+                
+                print(f"  ⚠️  Using first result (sufficient similarity): {company_name_found} ({company_number})", flush=True)
+                
+                return {
+                    'company_number': company_number,
+                    'company_name': company_name_found,
+                    'company_status': company_status,
+                    'match_quality': 'first_result',
+                    'similarity': similarity
+                }
+            else:
+                print(f"  ❌ First result similarity too low ({similarity:.2f}), likely not a match")
+                print(f"     Searched for: {company_name}")
+                print(f"     Found: {best_match.get('title')}")
+                print(f"     → Treating as unmatched (likely foreign or dissolved)")
+                return None
+        else:
+            # If no meaningful words to compare, return None
+            print(f"  ❌ Cannot calculate similarity, treating as unmatched")
+            return None
         
     except Exception as e:
         import traceback
