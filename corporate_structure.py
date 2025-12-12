@@ -511,6 +511,10 @@ def build_ownership_tree(
                     child_company_number = company_search['company_number']
                     child_company_name = company_search['company_name']
                     
+                    # CRITICAL FIX: Use official Companies House name instead of OCR'd CS01 name
+                    # This ensures "HERTZ HOLDINGS ITI UK LIMITED" (OCR error) becomes "HERTZ HOLDINGS III UK LIMITED" (correct)
+                    shareholder_info['name'] = child_company_name
+                    
                     shareholder_info['company_number'] = child_company_number
                     shareholder_info['company_status'] = company_search.get('company_status', '')
                     
