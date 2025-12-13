@@ -584,8 +584,8 @@ def extract_shareholders_for_company(company_number):
     # CRITICAL CHECK: Check if company is a PLC before extracting shareholders
     # PLCs (Public Limited Companies) that are publicly traded do not disclose
     # individual shareholders in CS01 filings
-    from resolver import SESSION, AUTH_CH, BASE_URL_CH
     try:
+        from resolver import SESSION, AUTH_CH, BASE_URL_CH
         url = f"{BASE_URL_CH}/company/{company_number}"
         response = SESSION.get(url, auth=AUTH_CH, timeout=15)
         if response.status_code == 200:
