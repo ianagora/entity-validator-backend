@@ -2933,7 +2933,7 @@ def build_screening_list(bundle: dict, shareholders: list, item: dict) -> dict:
             sh_percentage = sh.get("percentage", 0)
             sh_shares = sh.get("shares_held", 0)
             is_company = sh.get("is_company", False)
-            company_number = sh.get("company_number")
+            shareholder_company_number = sh.get("company_number")
             
             # Add the entity itself to ownership_chain
             # CRITICAL FIX: Include foreign companies (is_company=True) even without company_number
@@ -2964,8 +2964,8 @@ def build_screening_list(bundle: dict, shareholders: list, item: dict) -> dict:
                 }
                 
                 # Add company_number only if it exists (UK companies)
-                if company_number:
-                    screening_entry["company_number"] = company_number
+                if shareholder_company_number:
+                    screening_entry["company_number"] = shareholder_company_number
                 
                 # Add country if available (UK or foreign)
                 country = sh.get("country")
@@ -2976,7 +2976,7 @@ def build_screening_list(bundle: dict, shareholders: list, item: dict) -> dict:
                 
                 # Get officers and PSCs for this company (only for UK companies with company_number)
                 # Foreign companies don't have UK company numbers, so skip officer/PSC fetching
-                if not company_number:
+                if not shareholder_company_number:
                     print(f"   🌍 Foreign company {sh_name} - skipping officers/PSCs (no UK company number)")
                     # Still recurse into children if any
                     extract_ownership_chain(sh, depth + 1)
@@ -2998,7 +2998,7 @@ def build_screening_list(bundle: dict, shareholders: list, item: dict) -> dict:
                         # Fallback: Fetch from API (slow path - for old data before caching was added)
                         print(f"   ⚠️  No cached data for {sh_name}, fetching from API (consider re-enriching)")
                         from resolver import get_company_bundle
-                        entity_bundle = get_company_bundle(company_number)
+                        entity_bundle = get_company_bundle(shareholder_company_number)
                         officers_data = entity_bundle.get("officers", {})
                         pscs_data = entity_bundle.get("pscs", {})
                     
@@ -3041,7 +3041,7 @@ def build_screening_list(bundle: dict, shareholders: list, item: dict) -> dict:
                             "role": display_role,
                             "shareholding": "-",
                             "is_company": False,
-                            "company_number": company_number,
+                            "company_number": shareholder_company_number,
                             "category": category,
                             "depth": depth,
                             "appointed_on": appointed_on,
