@@ -209,6 +209,28 @@ def extract_shareholder_info_with_openai(pdf_path):
     print(f"   Using extraction method: {extraction_method}")
     print(f"   DEBUG: Extracted text preview (first 500 chars):\n{full_text[:500]}\n")
     print(f"   DEBUG: Extracted text preview (last 500 chars):\n{full_text[-500:]}\n")
+    
+    # CRITICAL CHECK: Detect if this is a publicly traded company
+    # Publicly traded companies don't disclose individual shareholders in CS01
+    publicly_traded_indicators = [
+        "shares admitted to trading on a regulated market",
+        "shares admitted to trading on a relevant market",
+        "DTRS issuer",
+        "DTR5 issuer",
+        "shares are admitted to trading",
+        "traded on a regulated market",
+        "traded on a relevant market"
+    ]
+    
+    full_text_lower = full_text.lower()
+    is_publicly_traded = any(indicator.lower() in full_text_lower for indicator in publicly_traded_indicators)
+    
+    if is_publicly_traded:
+        print("   📊 PUBLICLY TRADED COMPANY DETECTED")
+        print("   ⚠️  Individual shareholders are NOT disclosed in CS01 for publicly traded companies")
+        print("   ℹ️  Shares are traded on a regulated/relevant market (e.g., LSE, AIM)")
+        print("   → Returning empty shareholder list (this is correct behavior)")
+        return []
 
     # Initialize OpenAI client with timeout
     try:
@@ -558,6 +580,27 @@ def extract_shareholders_for_company(company_number):
     """Main function to extract shareholders using intelligent CS01 -> AR01 fallback"""
     print(f"Extracting shareholder information for company {company_number}")
     print("=" * 70)
+    
+    # CRITICAL CHECK: Check if company is a PLC before extracting shareholders
+    # PLCs (Public Limited Companies) that are publicly traded do not disclose
+    # individual shareholders in CS01 filings
+    from resolver import SESSION, AUTH_CH, BASE_URL_CH
+    try:
+        url = f"{BASE_URL_CH}/company/{company_number}"
+        response = SESSION.get(url, auth=AUTH_CH, timeout=15)
+        if response.status_code == 200:
+            company_data = response.json()
+            company_type = company_data.get('type', '')
+            company_name = company_data.get('company_name', '')
+            
+            if company_type == 'plc':
+                print(f"   📊 PLC DETECTED: {company_name} ({company_number})")
+                print(f"   ⚠️  This is a Public Limited Company")
+                print(f"   ℹ️  PLCs typically do not disclose individual shareholders in CS01")
+                print(f"   ℹ️  Shares are publicly traded (LSE, AIM, or other exchanges)")
+                print(f"   → Proceeding with extraction, but empty result is expected for traded PLCs")
+    except Exception as e:
+        print(f"   ⚠️  Could not check company type: {e}")
 
     status = {
         "regular_shareholders": [],
