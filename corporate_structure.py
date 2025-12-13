@@ -728,33 +728,49 @@ def build_ownership_tree(
                         shareholder_info['pscs'] = {}
                         shareholder_info['profile'] = {}
                     
-                    # Recursively get shareholders of this company
-                    print(f"{indent}     🔄 Recursing into: {child_company_name}")
-                    try:
-                        child_tree = build_ownership_tree(
-                            child_company_number,
-                            child_company_name,
-                            depth + 1,
-                            max_depth,
-                            visited
-                        )
-                        
-                        shareholder_info['children'] = child_tree.get('shareholders', [])
+                    # CRITICAL CHECK: Stop recursion if this is a PLC (publicly traded company)
+                    # PLCs don't disclose individual shareholders, so no point recursing further
+                    company_type = entity_bundle.get('profile', {}).get('type', '')
+                    if company_type == 'plc':
+                        print(f"{indent}     📊 PLC DETECTED: {child_company_name}")
+                        print(f"{indent}        ⚠️  This is a Public Limited Company (publicly traded)")
+                        print(f"{indent}        ℹ️  PLCs do not disclose individual shareholders")
+                        print(f"{indent}        → STOPPING recursion here (no shareholders to extract)")
+                        shareholder_info['is_plc'] = True
+                        shareholder_info['children'] = []  # Empty - no shareholders for PLCs
                         shareholder_info['child_company'] = {
                             'company_number': child_company_number,
                             'company_name': child_company_name,
                             'company_status': company_search.get('company_status', '')
                         }
-                    except Exception as recursion_error:
-                        # If recursion fails, still add the company but without children
-                        print(f"{indent}     ⚠️  Recursion failed for {child_company_name}: {recursion_error}")
-                        shareholder_info['children'] = []
-                        shareholder_info['recursion_error'] = str(recursion_error)
-                        shareholder_info['child_company'] = {
-                            'company_number': child_company_number,
-                            'company_name': child_company_name,
-                            'company_status': company_search.get('company_status', '')
-                        }
+                    else:
+                        # Recursively get shareholders of this company
+                        print(f"{indent}     🔄 Recursing into: {child_company_name}")
+                        try:
+                            child_tree = build_ownership_tree(
+                                child_company_number,
+                                child_company_name,
+                                depth + 1,
+                                max_depth,
+                                visited
+                            )
+                            
+                            shareholder_info['children'] = child_tree.get('shareholders', [])
+                            shareholder_info['child_company'] = {
+                                'company_number': child_company_number,
+                                'company_name': child_company_name,
+                                'company_status': company_search.get('company_status', '')
+                            }
+                        except Exception as recursion_error:
+                            # If recursion fails, still add the company but without children
+                            print(f"{indent}     ⚠️  Recursion failed for {child_company_name}: {recursion_error}")
+                            shareholder_info['children'] = []
+                            shareholder_info['recursion_error'] = str(recursion_error)
+                            shareholder_info['child_company'] = {
+                                'company_number': child_company_number,
+                                'company_name': child_company_name,
+                                'company_status': company_search.get('company_status', '')
+                            }
                 else:
                     print(f"{indent}     ⚠️  Could not find company in Companies House")
                     shareholder_info['search_failed'] = True
