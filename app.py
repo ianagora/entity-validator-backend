@@ -5047,8 +5047,9 @@ def download(path: str):
 @app.post("/api/admin/clear-database")
 def clear_database(request: Request):
     """
-    Admin endpoint to clear all data from the database.
+    Admin endpoint to clear all data from the DEV database.
     Requires X-Admin-Key header for security.
+    DEV Environment Only.
     
     Usage:
     curl -X POST https://your-backend.railway.app/api/admin/clear-database \
