@@ -1,5 +1,5 @@
 # app.py
-import os, json, tempfile, sqlite3, threading, hashlib, io, csv
+import os, json, tempfile, sqlite3, threading, hashlib, io, csv, zipfile
 from datetime import datetime, date
 from contextlib import contextmanager, asynccontextmanager
 from typing import Optional, List, Dict, Any
@@ -3714,9 +3714,9 @@ async def save_svg(item_id: int, request: Request):
         safe_name = re.sub(r'\s+', '_', safe_name)  # Replace spaces with underscores
         safe_name = safe_name[:50]  # Limit length
         
-        # Generate filename with timestamp
+        # Generate filename with timestamp and item_id
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{safe_name}_{company_number}_{timestamp}.svg"
+        filename = f"{safe_name}_{company_number}_item{item_id}_{timestamp}.svg"
         
         # Ensure svg_exports directory exists
         svg_dir = "svg_exports"
@@ -3863,6 +3863,128 @@ async def list_svgs():
             content={"error": f"Failed to list SVGs: {str(e)}"},
             status_code=500
         )
+
+@app.get("/api/svgs/download-all")
+async def download_all_svgs():
+    """
+    Download all saved SVGs as a ZIP file.
+    """
+    try:
+        svg_dir = "svg_exports"
+        
+        if not os.path.exists(svg_dir):
+            return JSONResponse(
+                content={"error": "No SVGs found"},
+                status_code=404
+            )
+        
+        svg_files = [f for f in os.listdir(svg_dir) if f.endswith('.svg')]
+        
+        if not svg_files:
+            return JSONResponse(
+                content={"error": "No SVG files to download"},
+                status_code=404
+            )
+        
+        # Create ZIP in memory
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            for filename in svg_files:
+                filepath = os.path.join(svg_dir, filename)
+                zip_file.write(filepath, filename)
+        
+        zip_buffer.seek(0)
+        
+        # Generate filename with timestamp
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        zip_filename = f"ownership_structures_{timestamp}.zip"
+        
+        return StreamingResponse(
+            zip_buffer,
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": f"attachment; filename={zip_filename}"
+            }
+        )
+        
+    except Exception as e:
+        return JSONResponse(
+            content={"error": f"Failed to create ZIP: {str(e)}"},
+            status_code=500
+        )
+
+@app.get("/api/batch/{batch_id}/svgs/download")
+async def download_batch_svgs(batch_id: int):
+    """
+    Download all SVGs for a specific batch as a ZIP file.
+    """
+    try:
+        svg_dir = "svg_exports"
+        
+        # Get all items in the batch
+        with db() as conn:
+            batch = conn.execute("SELECT * FROM runs WHERE id=?", (batch_id,)).fetchone()
+            if not batch:
+                return JSONResponse(
+                    content={"error": f"Batch {batch_id} not found"},
+                    status_code=404
+                )
+            
+            items = conn.execute(
+                "SELECT id, input_name, company_number, svg_path FROM items WHERE run_id=?",
+                (batch_id,)
+            ).fetchall()
+        
+        if not items:
+            return JSONResponse(
+                content={"error": f"No items found in batch {batch_id}"},
+                status_code=404
+            )
+        
+        # Collect SVG files for this batch
+        svg_files = []
+        for item in items:
+            svg_path = item[3]  # svg_path column
+            if svg_path and os.path.exists(svg_path):
+                svg_files.append({
+                    "path": svg_path,
+                    "filename": os.path.basename(svg_path)
+                })
+        
+        if not svg_files:
+            return JSONResponse(
+                content={"error": f"No SVGs found for batch {batch_id}"},
+                status_code=404
+            )
+        
+        # Create ZIP in memory
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            for svg_file in svg_files:
+                zip_file.write(svg_file["path"], svg_file["filename"])
+        
+        zip_buffer.seek(0)
+        
+        # Generate filename
+        batch_filename = batch[1] if len(batch) > 1 else f"batch_{batch_id}"
+        batch_filename = batch_filename.replace('.xlsx', '').replace('.csv', '')
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        zip_filename = f"{batch_filename}_ownership_structures_{timestamp}.zip"
+        
+        return StreamingResponse(
+            zip_buffer,
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": f"attachment; filename={zip_filename}"
+            }
+        )
+        
+    except Exception as e:
+        return JSONResponse(
+            content={"error": f"Failed to create ZIP: {str(e)}"},
+            status_code=500
+        )
+
 
 @app.get("/auto/{item_id}/compare", response_class=HTMLResponse)
 def auto_compare(request: Request, item_id: int):
