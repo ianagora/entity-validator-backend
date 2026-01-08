@@ -1006,6 +1006,15 @@ def init_db():
             # Column already exists
             pass
 
+        # NEW: ensure svg_path exists for SVG storage
+        try:
+            conn.execute('ALTER TABLE items ADD COLUMN "svg_path" TEXT')
+            existing_cols_lower.add("svg_path")
+            print("[init_db] Added svg_path column to items table")
+        except sqlite3.OperationalError:
+            # Column already exists
+            pass
+
         # add any missing exact-schema columns (526)
         for col in ALL_SCHEMA_FIELDS:
             if col.lower() not in existing_cols_lower:
@@ -3655,6 +3664,203 @@ async def export_screening_list_csv(item_id: int):
     except Exception as e:
         return JSONResponse(
             content={"error": f"Failed to export screening list: {str(e)}"},
+            status_code=500
+        )
+
+# ==================== SVG STORAGE ====================
+
+@app.post("/api/item/{item_id}/save-svg")
+async def save_svg(item_id: int, request: Request):
+    """
+    Save ownership structure SVG to centralized storage.
+    
+    ⚠️ WARNING: Railway uses ephemeral file systems.
+    SVGs saved here will be LOST on deployment/restart.
+    For production, migrate to Cloudflare R2 or Railway Volumes.
+    
+    File naming: {company_name}_{company_number}_{timestamp}.svg
+    Storage location: svg_exports/
+    """
+    try:
+        # Get request body
+        body = await request.json()
+        svg_data = body.get("svg_data")
+        
+        if not svg_data:
+            return JSONResponse(
+                content={"error": "No SVG data provided"},
+                status_code=400
+            )
+        
+        # Get item details from database
+        with db() as conn:
+            item = conn.execute(
+                "SELECT id, input_name, entity_name, company_number FROM items WHERE id=?",
+                (item_id,)
+            ).fetchone()
+        
+        if not item:
+            return JSONResponse(
+                content={"error": f"Item {item_id} not found"},
+                status_code=404
+            )
+        
+        # Sanitize company name for filename
+        company_name = item["entity_name"] or item["input_name"] or "Unknown"
+        company_number = item["company_number"] or "NO_NUMBER"
+        
+        # Remove invalid filename characters
+        safe_name = re.sub(r'[<>:"/\\|?*]', '', company_name)
+        safe_name = re.sub(r'\s+', '_', safe_name)  # Replace spaces with underscores
+        safe_name = safe_name[:50]  # Limit length
+        
+        # Generate filename with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{safe_name}_{company_number}_{timestamp}.svg"
+        
+        # Ensure svg_exports directory exists
+        svg_dir = "svg_exports"
+        os.makedirs(svg_dir, exist_ok=True)
+        
+        # Save SVG file
+        filepath = os.path.join(svg_dir, filename)
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(svg_data)
+        
+        # Update database with SVG path
+        with db() as conn:
+            conn.execute(
+                "UPDATE items SET svg_path=? WHERE id=?",
+                (filepath, item_id)
+            )
+            conn.commit()
+        
+        # Get file size
+        file_size = os.path.getsize(filepath)
+        
+        return JSONResponse(
+            content={
+                "success": True,
+                "message": "SVG saved successfully",
+                "filename": filename,
+                "filepath": filepath,
+                "file_size_kb": round(file_size / 1024, 2),
+                "company_name": company_name,
+                "company_number": company_number,
+                "timestamp": timestamp,
+                "warning": "⚠️ This file will be lost on Railway redeploy. Migrate to R2 for persistence."
+            },
+            status_code=200
+        )
+        
+    except Exception as e:
+        import traceback
+        return JSONResponse(
+            content={
+                "error": f"Failed to save SVG: {str(e)}",
+                "traceback": traceback.format_exc()
+            },
+            status_code=500
+        )
+
+@app.get("/api/item/{item_id}/svg")
+async def get_svg(item_id: int):
+    """
+    Retrieve saved SVG file for an item.
+    Returns the SVG file if it exists, 404 otherwise.
+    """
+    try:
+        # Get SVG path from database
+        with db() as conn:
+            item = conn.execute(
+                "SELECT svg_path, entity_name, company_number FROM items WHERE id=?",
+                (item_id,)
+            ).fetchone()
+        
+        if not item:
+            return JSONResponse(
+                content={"error": f"Item {item_id} not found"},
+                status_code=404
+            )
+        
+        svg_path = item["svg_path"]
+        
+        if not svg_path or not os.path.exists(svg_path):
+            return JSONResponse(
+                content={
+                    "error": "SVG not found",
+                    "message": "No SVG has been saved for this item yet, or it was lost due to deployment."
+                },
+                status_code=404
+            )
+        
+        # Return SVG file
+        company_name = item["entity_name"] or "unknown"
+        company_number = item["company_number"] or "no_number"
+        safe_name = re.sub(r'[<>:"/\\|?*\s]+', '_', company_name)[:50]
+        
+        return FileResponse(
+            svg_path,
+            media_type="image/svg+xml",
+            filename=f"{safe_name}_{company_number}.svg"
+        )
+        
+    except Exception as e:
+        return JSONResponse(
+            content={"error": f"Failed to retrieve SVG: {str(e)}"},
+            status_code=500
+        )
+
+@app.get("/api/svgs/list")
+async def list_svgs():
+    """
+    List all saved SVG files in the svg_exports directory.
+    Useful for debugging and management.
+    """
+    try:
+        svg_dir = "svg_exports"
+        
+        if not os.path.exists(svg_dir):
+            return JSONResponse(
+                content={
+                    "files": [],
+                    "total_count": 0,
+                    "total_size_mb": 0,
+                    "message": "No SVGs saved yet"
+                }
+            )
+        
+        files = []
+        total_size = 0
+        
+        for filename in os.listdir(svg_dir):
+            if filename.endswith('.svg'):
+                filepath = os.path.join(svg_dir, filename)
+                file_size = os.path.getsize(filepath)
+                total_size += file_size
+                
+                files.append({
+                    "filename": filename,
+                    "size_kb": round(file_size / 1024, 2),
+                    "created": datetime.fromtimestamp(os.path.getctime(filepath)).isoformat()
+                })
+        
+        # Sort by creation time (newest first)
+        files.sort(key=lambda x: x["created"], reverse=True)
+        
+        return JSONResponse(
+            content={
+                "files": files,
+                "total_count": len(files),
+                "total_size_mb": round(total_size / (1024 * 1024), 2),
+                "storage_location": svg_dir,
+                "warning": "⚠️ These files will be lost on Railway redeploy"
+            }
+        )
+        
+    except Exception as e:
+        return JSONResponse(
+            content={"error": f"Failed to list SVGs: {str(e)}"},
             status_code=500
         )
 
