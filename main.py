@@ -19,6 +19,7 @@ print(f"OPENAI_API_KEY present: {bool(os.getenv('OPENAI_API_KEY'))}")
 print(f"ENVIRONMENT: {os.getenv('ENVIRONMENT', 'NOT SET')}")
 print(f"PORT: {port}")
 print("=" * 60)
+print("🔄 Worker pool will initialize on startup...")
 sys.stdout.flush()
 
 # Exec uvicorn (replaces this process)
