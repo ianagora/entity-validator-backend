@@ -5071,13 +5071,18 @@ def clear_database(request: Request):
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         
-        # Get count before deletion
+        # Get counts before deletion
         cursor.execute("SELECT COUNT(*) FROM items")
-        count_before = cursor.fetchone()[0]
+        items_count = cursor.fetchone()[0]
         
-        # Delete all data
+        cursor.execute("SELECT COUNT(*) FROM runs")
+        batches_count = cursor.fetchone()[0]
+        
+        # Delete all data from all tables
         cursor.execute("DELETE FROM items")
+        cursor.execute("DELETE FROM runs")
         cursor.execute("DELETE FROM sqlite_sequence WHERE name='items'")
+        cursor.execute("DELETE FROM sqlite_sequence WHERE name='runs'")
         
         conn.commit()
         conn.close()
@@ -5085,7 +5090,8 @@ def clear_database(request: Request):
         return {
             "success": True,
             "message": "Database cleared successfully",
-            "items_deleted": count_before,
+            "items_deleted": items_count,
+            "batches_deleted": batches_count,
             "database": DB_PATH,
             "timestamp": datetime.now().isoformat()
         }
