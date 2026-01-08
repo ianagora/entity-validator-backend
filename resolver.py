@@ -44,7 +44,10 @@ MAX_RETRIES = int(os.getenv("MAX_RETRIES", "3"))
 BACKOFF     = float(os.getenv("BACKOFF_SECONDS", "1.5"))
 
 if not CH_API_KEY:
-    raise RuntimeError("CH_API_KEY is not set. Put it in .env or env vars.")
+    print("⚠️  WARNING: CH_API_KEY is not set. Companies House API will not work.", flush=True)
+    print("⚠️  Set CH_API_KEY in Railway environment variables.", flush=True)
+    # Don't crash - let the app start so we can debug
+    # raise RuntimeError("CH_API_KEY is not set. Put it in .env or env vars.")
 
 # -----------------------------------------------------------------------------
 # HTTP sessions with retries
