@@ -3913,6 +3913,166 @@ async def download_all_svgs():
             status_code=500
         )
 
+@app.post("/api/batch/{batch_id}/svgs/generate")
+async def generate_batch_svgs(batch_id: int):
+    """
+    Generate simple placeholder SVGs for all enriched items in a batch.
+    This creates basic SVG files server-side so users don't need to view each entity.
+    """
+    try:
+        svg_dir = "svg_exports"
+        os.makedirs(svg_dir, exist_ok=True)
+        
+        # Get all enriched items in the batch
+        with db() as conn:
+            batch = conn.execute("SELECT * FROM runs WHERE id=?", (batch_id,)).fetchone()
+            if not batch:
+                return JSONResponse(
+                    content={"error": f"Batch {batch_id} not found"},
+                    status_code=404
+                )
+            
+            items = conn.execute(
+                """SELECT id, input_name, entity_name, company_number, ownership_tree_json, 
+                   shareholders_json FROM items WHERE run_id=? AND enrich_status='done'""",
+                (batch_id,)
+            ).fetchall()
+        
+        if not items:
+            return JSONResponse(
+                content={"error": f"No enriched items found in batch {batch_id}"},
+                status_code=404
+            )
+        
+        generated = []
+        skipped = []
+        
+        for item in items:
+            item_id = item[0]
+            entity_name = item[2] or item[1]  # entity_name or input_name
+            company_number = item[3] or "UNKNOWN"
+            ownership_tree = item[4]
+            shareholders_json = item[5]
+            
+            # Parse shareholders data
+            shareholders = []
+            if shareholders_json:
+                try:
+                    shareholders_data = json.loads(shareholders_json)
+                    if isinstance(shareholders_data, dict) and 'items' in shareholders_data:
+                        shareholders = shareholders_data['items'][:10]  # Limit to top 10
+                except:
+                    pass
+            
+            # Generate simple SVG
+            svg_content = generate_simple_ownership_svg(entity_name, company_number, shareholders)
+            
+            # Save SVG
+            safe_name = re.sub(r'[^\w\s-]', '', entity_name).strip().replace(' ', '_')[:50]
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            filename = f"{safe_name}_{company_number}_item{item_id}_{timestamp}.svg"
+            filepath = os.path.join(svg_dir, filename)
+            
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write(svg_content)
+            
+            # Update database
+            with db() as conn:
+                conn.execute("UPDATE items SET svg_path=? WHERE id=?", (filepath, item_id))
+            
+            generated.append({
+                "item_id": item_id,
+                "filename": filename,
+                "company_name": entity_name,
+                "company_number": company_number
+            })
+        
+        return JSONResponse(
+            content={
+                "success": True,
+                "batch_id": batch_id,
+                "generated": len(generated),
+                "skipped": len(skipped),
+                "files": generated,
+                "message": f"Generated {len(generated)} SVG files"
+            }
+        )
+        
+    except Exception as e:
+        return JSONResponse(
+            content={"error": f"Failed to generate SVGs: {str(e)}"},
+            status_code=500
+        )
+
+def generate_simple_ownership_svg(company_name: str, company_number: str, shareholders: list) -> str:
+    """
+    Generate a simple ownership structure SVG showing company and top shareholders.
+    """
+    width = 800
+    height = max(400, 150 + len(shareholders) * 80)
+    
+    svg_lines = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
+        '  <!-- Background -->',
+        '  <rect width="100%" height="100%" fill="#f8f9fa"/>',
+        '  ',
+        '  <!-- Title -->',
+        f'  <text x="{width//2}" y="30" font-family="Arial, sans-serif" font-size="18" font-weight="bold" text-anchor="middle" fill="#1a1a1a">',
+        f'    Ownership Structure',
+        '  </text>',
+        '  ',
+        '  <!-- Target Company -->',
+        f'  <rect x="{width//2 - 150}" y="60" width="300" height="70" rx="8" fill="#3b82f6" stroke="#2563eb" stroke-width="2"/>',
+        f'  <text x="{width//2}" y="90" font-family="Arial, sans-serif" font-size="14" font-weight="bold" text-anchor="middle" fill="white">',
+        f'    {company_name[:40]}',
+        '  </text>',
+        f'  <text x="{width//2}" y="110" font-family="Arial, sans-serif" font-size="12" text-anchor="middle" fill="white" opacity="0.9">',
+        f'    Company No: {company_number}',
+        '  </text>',
+        '  '
+    ]
+    
+    if shareholders and len(shareholders) > 0:
+        svg_lines.extend([
+            '  <!-- Shareholders -->',
+            f'  <text x="{width//2}" y="160" font-family="Arial, sans-serif" font-size="14" font-weight="600" text-anchor="middle" fill="#4b5563">',
+            f'    Shareholders / PSCs ({len(shareholders)} shown)',
+            '  </text>',
+            '  '
+        ])
+        
+        y_start = 190
+        for i, sh in enumerate(shareholders[:10]):
+            y = y_start + (i * 80)
+            name = sh.get('name', 'Unknown')[:35]
+            natures = sh.get('natures_of_control', [])
+            nature_text = natures[0][:40] if natures else 'No control info'
+            
+            # Draw shareholder box
+            svg_lines.extend([
+                f'  <!-- Shareholder {i+1} -->',
+                f'  <line x1="{width//2}" y1="130" x2="{width//2}" y2="{y}" stroke="#94a3b8" stroke-width="2" stroke-dasharray="4,4"/>',
+                f'  <rect x="{width//2 - 180}" y="{y}" width="360" height="60" rx="6" fill="white" stroke="#cbd5e1" stroke-width="1.5"/>',
+                f'  <text x="{width//2 - 170}" y="{y + 25}" font-family="Arial, sans-serif" font-size="13" font-weight="600" fill="#1e293b">',
+                f'    {name}',
+                '  </text>',
+                f'  <text x="{width//2 - 170}" y="{y + 45}" font-family="Arial, sans-serif" font-size="11" fill="#64748b">',
+                f'    {nature_text}',
+                '  </text>',
+                '  '
+            ])
+    else:
+        svg_lines.extend([
+            '  <!-- No Shareholders -->',
+            f'  <text x="{width//2}" y="180" font-family="Arial, sans-serif" font-size="13" text-anchor="middle" fill="#9ca3af">',
+            '    No shareholder data available',
+            '  </text>'
+        ])
+    
+    svg_lines.append('</svg>')
+    
+    return '\n'.join(svg_lines)
+
 @app.get("/api/batch/{batch_id}/svgs/download")
 async def download_batch_svgs(batch_id: int):
     """
