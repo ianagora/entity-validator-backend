@@ -5055,6 +5055,11 @@ def clear_database(request: Request):
     curl -X POST https://your-backend.railway.app/api/admin/clear-database \
       -H "X-Admin-Key: clear-dev-db-2024"
     """
+    # SAFETY: Only allow in DEV environment
+    environment = os.getenv("ENVIRONMENT", "development")
+    if environment == "production":
+        raise HTTPException(status_code=403, detail="This endpoint is only available in DEV environment")
+    
     # Check admin key
     admin_key = request.headers.get("X-Admin-Key", "")
     expected_key = os.getenv("ADMIN_KEY", "clear-dev-db-2024")
