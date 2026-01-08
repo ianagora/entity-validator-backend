@@ -5044,6 +5044,53 @@ def download(path: str):
         return RedirectResponse(url="/")
     return FileResponse(abs_path, filename=os.path.basename(abs_path))
 
+@app.post("/api/admin/clear-database")
+def clear_database(request: Request):
+    """
+    Admin endpoint to clear all data from the database.
+    Requires X-Admin-Key header for security.
+    
+    Usage:
+    curl -X POST https://your-backend.railway.app/api/admin/clear-database \
+      -H "X-Admin-Key: clear-dev-db-2024"
+    """
+    # Check admin key
+    admin_key = request.headers.get("X-Admin-Key", "")
+    expected_key = os.getenv("ADMIN_KEY", "clear-dev-db-2024")
+    
+    if admin_key != expected_key:
+        raise HTTPException(status_code=403, detail="Invalid admin key")
+    
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        # Get count before deletion
+        cursor.execute("SELECT COUNT(*) FROM items")
+        count_before = cursor.fetchone()[0]
+        
+        # Delete all data
+        cursor.execute("DELETE FROM items")
+        cursor.execute("DELETE FROM sqlite_sequence WHERE name='items'")
+        
+        conn.commit()
+        conn.close()
+        
+        return {
+            "success": True,
+            "message": "Database cleared successfully",
+            "items_deleted": count_before,
+            "database": DB_PATH,
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        import traceback
+        return {
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
+
 @app.get("/health")
 def health():
     return {"status": "healthy"}
