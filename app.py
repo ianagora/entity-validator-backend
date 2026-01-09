@@ -2135,6 +2135,22 @@ def enrich_one(item_id: int, max_retries: int = 3):
             json.dump(bundle, f, ensure_ascii=False, indent=2)
         bundle_to_xlsx(bundle, xlsx_path)
 
+        # CRITICAL: Ensure ownership_tree always exists for SVG generation
+        # This must run BEFORE metrics calculation and SVG generation
+        if not bundle.get("ownership_tree"):
+            print(f"[enrich_one] ⚠️  No ownership tree found, creating basic tree for SVG generation...")
+            company_name = bundle.get("profile", {}).get("company_name", item.get("input_name", "Unknown Company"))
+            print(f"[enrich_one] Creating basic tree for: {company_name} ({company_number})")
+            bundle["ownership_tree"] = {
+                "company_number": company_number,
+                "company_name": company_name,
+                "shareholders": []
+            }
+            print(f"[enrich_one] ✅ Basic ownership tree created")
+        else:
+            shareholders_count = len(bundle["ownership_tree"].get("shareholders", []))
+            print(f"[enrich_one] ✅ Ownership tree exists with {shareholders_count} shareholders")
+
         # Calculate enrichment metrics
         enrichment_duration = time.time() - start_time
         
@@ -2178,19 +2194,9 @@ def enrich_one(item_id: int, max_retries: int = 3):
         shareholders_json = json.dumps(shareholders_data, ensure_ascii=False)
         shareholders_status = bundle.get("shareholders_status", "")
         
-        # Ensure ownership_tree always exists for SVG generation
-        if not bundle.get("ownership_tree"):
-            # Create a basic tree with just the company and no shareholders
-            print(f"[enrich_one] No ownership tree found, creating basic tree for SVG generation...")
-            company_name = bundle.get("profile", {}).get("company_name", "Unknown Company")
-            bundle["ownership_tree"] = {
-                "company_number": company_number,
-                "company_name": company_name,
-                "shareholders": []
-            }
-        
         # Serialize ownership tree for database storage (to survive Railway redeployments)
-        ownership_tree_json = json.dumps(bundle.get("ownership_tree"), ensure_ascii=False) if bundle.get("ownership_tree") else None
+        # Note: ownership_tree is guaranteed to exist now (created above if missing)
+        ownership_tree_json = json.dumps(bundle.get("ownership_tree"), ensure_ascii=False)
 
         # Generate and save ownership structure SVG automatically after enrichment
         svg_path = None
