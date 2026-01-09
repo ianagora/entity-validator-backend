@@ -1519,6 +1519,192 @@ def bundle_to_xlsx(bundle: dict, xlsx_path: str):
 # ---------------- Enrichment worker ----------------
 
 # ---------------- Companies House enrichment ----------------
+def generate_and_save_ownership_svg(item_id: int, ownership_tree: dict, item: dict) -> str:
+    """
+    Generate a complete multi-layer ownership structure SVG from the ownership tree
+    and save it to the svg_exports directory.
+    
+    Returns the file path of the saved SVG.
+    """
+    import re
+    from datetime import datetime
+    
+    # Ensure svg_exports directory exists
+    svg_dir = "svg_exports"
+    os.makedirs(svg_dir, exist_ok=True)
+    
+    # Get company details
+    company_name = ownership_tree.get("company_name", item.get("input_name", "Unknown"))
+    company_number = ownership_tree.get("company_number", item.get("company_number", "UNKNOWN"))
+    
+    # Build the SVG
+    svg_content = build_multi_layer_svg(ownership_tree, company_name, company_number)
+    
+    # Generate filename
+    safe_name = re.sub(r'[^\w\s-]', '', company_name).strip().replace(' ', '_')[:50]
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    filename = f"{safe_name}_{company_number}_item{item_id}_{timestamp}.svg"
+    filepath = os.path.join(svg_dir, filename)
+    
+    # Save SVG
+    with open(filepath, 'w', encoding='utf-8') as f:
+        f.write(svg_content)
+    
+    return filepath
+
+def build_multi_layer_svg(tree: dict, company_name: str, company_number: str) -> str:
+    """
+    Build a complete multi-layer ownership structure SVG from the ownership tree.
+    This recursively renders all layers of shareholders.
+    """
+    # Calculate tree dimensions
+    shareholders = tree.get("shareholders", [])
+    total_nodes = count_tree_nodes(tree)
+    
+    # SVG dimensions
+    width = 1200
+    height = max(600, 200 + total_nodes * 60)
+    
+    svg_lines = [
+        f'<?xml version="1.0" encoding="UTF-8"?>',
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
+        '  <!-- Background -->',
+        '  <rect width="100%" height="100%" fill="#f8f9fa"/>',
+        '  ',
+        '  <!-- Title -->',
+        f'  <text x="{width//2}" y="30" font-family="Arial, sans-serif" font-size="20" font-weight="bold" text-anchor="middle" fill="#1a1a1a">',
+        f'    Ownership Structure - Multi-Layer Tree',
+        '  </text>',
+        '  ',
+        '  <!-- Target Company (Center) -->',
+        f'  <rect x="{width//2 - 180}" y="60" width="360" height="80" rx="8" fill="#3b82f6" stroke="#2563eb" stroke-width="2"/>',
+        f'  <text x="{width//2}" y="90" font-family="Arial, sans-serif" font-size="15" font-weight="bold" text-anchor="middle" fill="white">',
+        f'    {company_name[:50]}',
+        '  </text>',
+        f'  <text x="{width//2}" y="115" font-family="Arial, sans-serif" font-size="13" text-anchor="middle" fill="white" opacity="0.9">',
+        f'    Company No: {company_number}',
+        '  </text>',
+        '  '
+    ]
+    
+    # Render shareholders recursively
+    if shareholders and len(shareholders) > 0:
+        y_offset = 180
+        svg_lines.extend(render_shareholders_layer(shareholders, width//2, y_offset, width, level=1))
+    else:
+        svg_lines.extend([
+            '  <!-- No Shareholders -->',
+            f'  <text x="{width//2}" y="200" font-family="Arial, sans-serif" font-size="14" text-anchor="middle" fill="#9ca3af">',
+            '    No shareholder data available',
+            '  </text>'
+        ])
+    
+    svg_lines.append('</svg>')
+    
+    return '\n'.join(svg_lines)
+
+def count_tree_nodes(tree: dict) -> int:
+    """Count total nodes in the ownership tree."""
+    count = len(tree.get("shareholders", []))
+    for shareholder in tree.get("shareholders", []):
+        if shareholder.get("shareholders") or shareholder.get("children"):
+            children = shareholder.get("shareholders") or shareholder.get("children") or []
+            count += count_tree_children(children)
+    return count
+
+def count_tree_children(children: list) -> int:
+    """Recursively count children nodes."""
+    count = len(children)
+    for child in children:
+        if child.get("shareholders") or child.get("children"):
+            grand_children = child.get("shareholders") or child.get("children") or []
+            count += count_tree_children(grand_children)
+    return count
+
+def render_shareholders_layer(shareholders: list, parent_x: int, y_start: int, width: int, level: int = 1) -> list:
+    """
+    Recursively render shareholders and their children in layers.
+    Returns SVG lines for this layer and all child layers.
+    """
+    if not shareholders or len(shareholders) == 0:
+        return []
+    
+    svg_lines = []
+    num_shareholders = len(shareholders)
+    box_width = 300
+    box_height = 70
+    horizontal_spacing = 350
+    vertical_spacing = 120
+    
+    # Color based on level
+    colors = [
+        ("#10b981", "#059669"),  # Green for level 1
+        ("#f59e0b", "#d97706"),  # Orange for level 2
+        ("#8b5cf6", "#7c3aed"),  # Purple for level 3
+        ("#ec4899", "#db2777"),  # Pink for level 4+
+    ]
+    color_idx = min(level - 1, len(colors) - 1)
+    fill_color, stroke_color = colors[color_idx]
+    
+    # Calculate positions for this layer
+    if num_shareholders == 1:
+        positions = [parent_x]
+    elif num_shareholders == 2:
+        positions = [parent_x - horizontal_spacing//2, parent_x + horizontal_spacing//2]
+    else:
+        # Distribute evenly
+        total_width = (num_shareholders - 1) * horizontal_spacing
+        start_x = parent_x - total_width // 2
+        positions = [start_x + i * horizontal_spacing for i in range(num_shareholders)]
+    
+    y_current = y_start
+    
+    for idx, shareholder in enumerate(shareholders[:20]):  # Limit to 20 per layer to keep SVG manageable
+        x_pos = positions[idx] if idx < len(positions) else parent_x
+        
+        name = shareholder.get("name", "Unknown")[:35]
+        percentage = shareholder.get("percentage") or shareholder.get("cumulative_percentage", 0)
+        shares = shareholder.get("shares_held", "")
+        is_company = shareholder.get("is_company", False)
+        
+        # Draw connection line from parent
+        svg_lines.extend([
+            f'  <!-- Connection line -->',
+            f'  <line x1="{parent_x}" y1="{y_start - 40}" x2="{x_pos}" y2="{y_current}" stroke="#94a3b8" stroke-width="2" stroke-dasharray="4,4"/>'
+        ])
+        
+        # Draw shareholder box
+        svg_lines.extend([
+            f'  <!-- Shareholder (Level {level}) -->',
+            f'  <rect x="{x_pos - box_width//2}" y="{y_current}" width="{box_width}" height="{box_height}" rx="6" fill="{fill_color}" stroke="{stroke_color}" stroke-width="2"/>',
+            f'  <text x="{x_pos}" y="{y_current + 25}" font-family="Arial, sans-serif" font-size="13" font-weight="600" text-anchor="middle" fill="white">',
+            f'    {name}',
+            '  </text>',
+            f'  <text x="{x_pos}" y="{y_current + 45}" font-family="Arial, sans-serif" font-size="11" text-anchor="middle" fill="white" opacity="0.9">',
+            f'    {percentage:.2f}% ownership',
+            '  </text>',
+            f'  <text x="{x_pos}" y="{y_current + 62}" font-family="Arial, sans-serif" font-size="10" text-anchor="middle" fill="white" opacity="0.8">',
+            f'    {"Company" if is_company else "Individual"}',
+            '  </text>',
+            '  '
+        ])
+        
+        # Recursively render children if they exist
+        children = shareholder.get("shareholders") or shareholder.get("children") or []
+        if children and len(children) > 0:
+            child_y = y_current + box_height + vertical_spacing
+            child_svg = render_shareholders_layer(children, x_pos, child_y, width, level + 1)
+            svg_lines.extend(child_svg)
+    
+    if num_shareholders > 20:
+        svg_lines.extend([
+            f'  <text x="{parent_x}" y="{y_current + 100}" font-family="Arial, sans-serif" font-size="12" text-anchor="middle" fill="#6b7280" font-style="italic">',
+            f'    ... and {num_shareholders - 20} more shareholders',
+            '  </text>'
+        ])
+    
+    return svg_lines
+
 def enrich_one(item_id: int, max_retries: int = 3):
     """Fetch CH bundle, write artifacts, and update status with automatic retry on failure.
     
@@ -1893,10 +2079,24 @@ def enrich_one(item_id: int, max_retries: int = 3):
         # Serialize ownership tree for database storage (to survive Railway redeployments)
         ownership_tree_json = json.dumps(bundle.get("ownership_tree"), ensure_ascii=False) if bundle.get("ownership_tree") else None
 
+        # Generate and save ownership structure SVG automatically after enrichment
+        svg_path = None
+        if bundle.get("ownership_tree"):
+            try:
+                svg_path = generate_and_save_ownership_svg(
+                    item_id=item_id,
+                    ownership_tree=bundle.get("ownership_tree"),
+                    item=item  # Pass item for company name/number
+                )
+                print(f"[enrich_one] ✅ Generated ownership SVG: {svg_path}")
+            except Exception as svg_error:
+                print(f"[enrich_one] ⚠️  Failed to generate SVG: {svg_error}")
+                # Don't fail enrichment if SVG generation fails
+
         with db() as conn:
             conn.execute(
-                "UPDATE items SET enrich_status='done', enrich_json_path=?, enrich_xlsx_path=?, shareholders_json=?, shareholders_status=?, ownership_tree_json=? WHERE id=?",
-                (json_path, xlsx_path, shareholders_json, shareholders_status, ownership_tree_json, item_id),
+                "UPDATE items SET enrich_status='done', enrich_json_path=?, enrich_xlsx_path=?, shareholders_json=?, shareholders_status=?, ownership_tree_json=?, svg_path=? WHERE id=?",
+                (json_path, xlsx_path, shareholders_json, shareholders_status, ownership_tree_json, svg_path, item_id),
             )
 
     except Exception as e:
