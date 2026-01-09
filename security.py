@@ -85,6 +85,126 @@ def decode_token(token: str) -> Dict[str, Any]:
         )
 
 # ==============================================================================
+# TOKEN BLACKLISTING (Phase 3: Session Management)
+# ==============================================================================
+
+def init_token_blacklist_table():
+    """Initialize token blacklist table if it doesn't exist."""
+    conn = get_db_connection()
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS token_blacklist (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                token TEXT NOT NULL UNIQUE,
+                user_id INTEGER,
+                blacklisted_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                reason TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_token_blacklist_token ON token_blacklist(token)
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_token_blacklist_expires ON token_blacklist(expires_at)
+        """)
+        conn.commit()
+    finally:
+        conn.close()
+
+def blacklist_token(token: str, user_id: Optional[int] = None, reason: str = "logout") -> None:
+    """
+    Add a token to the blacklist.
+    
+    Args:
+        token: The JWT token to blacklist
+        user_id: Optional user ID who owns the token
+        reason: Reason for blacklisting (logout, security, etc.)
+    """
+    # Ensure table exists
+    try:
+        conn = get_db_connection()
+        conn.execute("SELECT 1 FROM token_blacklist LIMIT 1")
+        conn.close()
+    except sqlite3.OperationalError:
+        init_token_blacklist_table()
+    
+    try:
+        # Decode token to get expiration
+        payload = decode_token(token)
+        expires_at = datetime.fromtimestamp(payload.get("exp", 0))
+        
+        conn = get_db_connection()
+        conn.execute("""
+            INSERT OR IGNORE INTO token_blacklist (token, user_id, blacklisted_at, expires_at, reason)
+            VALUES (?, ?, ?, ?, ?)
+        """, (
+            token,
+            user_id,
+            datetime.utcnow().isoformat() + 'Z',
+            expires_at.isoformat(),
+            reason
+        ))
+        conn.commit()
+    except Exception as e:
+        print(f"[TOKEN BLACKLIST ERROR] Failed to blacklist token: {e}")
+    finally:
+        conn.close()
+
+def is_token_blacklisted(token: str) -> bool:
+    """
+    Check if a token is blacklisted.
+    
+    Args:
+        token: The JWT token to check
+        
+    Returns:
+        True if blacklisted, False otherwise
+    """
+    # Ensure table exists
+    try:
+        conn = get_db_connection()
+        conn.execute("SELECT 1 FROM token_blacklist LIMIT 1")
+        conn.close()
+    except sqlite3.OperationalError:
+        init_token_blacklist_table()
+        return False  # Table just created, no tokens blacklisted
+    
+    try:
+        conn = get_db_connection()
+        result = conn.execute(
+            "SELECT 1 FROM token_blacklist WHERE token = ? LIMIT 1",
+            (token,)
+        ).fetchone()
+        return result is not None
+    finally:
+        conn.close()
+
+def cleanup_expired_tokens() -> int:
+    """
+    Remove expired tokens from the blacklist.
+    Should be run periodically (e.g., daily cron job).
+    
+    Returns:
+        Number of tokens removed
+    """
+    try:
+        conn = get_db_connection()
+        now = datetime.utcnow().isoformat()
+        cursor = conn.execute(
+            "DELETE FROM token_blacklist WHERE expires_at < ?",
+            (now,)
+        )
+        deleted = cursor.rowcount
+        conn.commit()
+        return deleted
+    except Exception as e:
+        print(f"[TOKEN CLEANUP ERROR] Failed to cleanup tokens: {e}")
+        return 0
+    finally:
+        conn.close()
+
+# ==============================================================================
 # USER AUTHENTICATION (Phase 1: Authentication & Authorization)
 # ==============================================================================
 
@@ -100,7 +220,7 @@ async def get_current_user(token: Optional[str] = Depends(oauth2_scheme)) -> Opt
     """
     Get the current authenticated user from JWT token.
     Returns None if no token provided (for optional auth).
-    Raises HTTPException if token is invalid.
+    Raises HTTPException if token is invalid or blacklisted.
     """
     if not token:
         return None
@@ -110,6 +230,14 @@ async def get_current_user(token: Optional[str] = Depends(oauth2_scheme)) -> Opt
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
+    
+    # Check if token is blacklisted
+    if is_token_blacklisted(token):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has been revoked",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     
     try:
         payload = decode_token(token)
@@ -571,6 +699,56 @@ def validate_required_env_vars(required_vars: List[str]) -> Dict[str, bool]:
         results[var] = bool(os.getenv(var))
     
     return results
+
+# ==============================================================================
+# SECURITY MONITORING & ALERTING (Phase 3: Logging & Monitoring)
+# ==============================================================================
+
+class SecurityMonitor:
+    """Monitor security events and detect suspicious activity."""
+    
+    @staticmethod
+    def check_failed_login_attempts(email: str, time_window_minutes: int = 15, threshold: int = 5) -> Dict[str, Any]:
+        """Check for excessive failed login attempts."""
+        conn = get_db_connection()
+        try:
+            cutoff_time = (datetime.utcnow() - timedelta(minutes=time_window_minutes)).isoformat()
+            result = conn.execute("""
+                SELECT COUNT(*) as count FROM audit_logs
+                WHERE action = 'login_failed' AND user_email = ? AND timestamp > ?
+            """, (email, cutoff_time)).fetchone()
+            count = result["count"] if result else 0
+            return {"suspicious": count >= threshold, "count": count, "threshold": threshold}
+        finally:
+            conn.close()
+    
+    @staticmethod
+    def get_security_alerts(limit: int = 10) -> List[Dict[str, Any]]:
+        """Get recent security alerts."""
+        conn = get_db_connection()
+        try:
+            alerts = conn.execute("""
+                SELECT * FROM audit_logs
+                WHERE action IN ('login_failed', 'api_key_validation_failed', 'clear_database_blocked')
+                  AND status = 'failed'
+                ORDER BY timestamp DESC LIMIT ?
+            """, (limit,)).fetchall()
+            return [dict(alert) for alert in alerts]
+        finally:
+            conn.close()
+    
+    @staticmethod
+    def get_activity_summary(hours: int = 24) -> Dict[str, Any]:
+        """Get security activity summary."""
+        conn = get_db_connection()
+        try:
+            cutoff = (datetime.utcnow() - timedelta(hours=hours)).isoformat()
+            total = conn.execute("SELECT COUNT(*) as c FROM audit_logs WHERE timestamp > ?", (cutoff,)).fetchone()["c"]
+            failed = conn.execute("SELECT COUNT(*) as c FROM audit_logs WHERE timestamp > ? AND status = 'failed'", (cutoff,)).fetchone()["c"]
+            users = conn.execute("SELECT COUNT(DISTINCT user_id) as c FROM audit_logs WHERE timestamp > ? AND user_id IS NOT NULL", (cutoff,)).fetchone()["c"]
+            return {"time_period_hours": hours, "total_events": total, "failed_events": failed, "unique_users": users}
+        finally:
+            conn.close()
 
 # ==============================================================================
 # INITIALIZATION

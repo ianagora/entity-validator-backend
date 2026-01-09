@@ -57,7 +57,12 @@ from security import (
     ACCESS_TOKEN_EXPIRE_MINUTES,
     REFRESH_TOKEN_EXPIRE_DAYS,
     get_cors_config,
-    get_csp_header
+    get_csp_header,
+    blacklist_token,
+    is_token_blacklisted,
+    cleanup_expired_tokens,
+    oauth2_scheme,
+    SecurityMonitor
 )
 
 # ---------------- Worker Pool Configuration ----------------
@@ -1168,6 +1173,53 @@ async def security_headers(request: Request, call_next):
     response.headers["Content-Security-Policy"] = get_csp_header()
     response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
     return response
+
+@app.middleware("http")
+async def secure_error_handling(request: Request, call_next):
+    """
+    Secure error handling middleware.
+    Prevents information leakage in error responses.
+    """
+    try:
+        response = await call_next(request)
+        return response
+    except Exception as e:
+        # Log the full error server-side
+        import traceback
+        error_detail = traceback.format_exc()
+        print(f"[ERROR] {request.method} {request.url.path}: {str(e)}")
+        print(error_detail)
+        
+        # Log to audit system
+        log_audit_event(
+            action="internal_error",
+            status="failed",
+            ip_address=request.client.host if request.client else None,
+            details=f"{request.method} {request.url.path}: {str(e)[:200]}"
+        )
+        
+        # Return generic error to client (don't leak stack traces)
+        environment = os.getenv("ENVIRONMENT", "development")
+        if environment == "production":
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "error": "Internal server error",
+                    "message": "An unexpected error occurred. Please contact support if the problem persists.",
+                    "request_id": str(hash(f"{request.url.path}{datetime.now().isoformat()}"))
+                }
+            )
+        else:
+            # In development, show more details for debugging
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "error": "Internal server error",
+                    "message": str(e),
+                    "type": type(e).__name__,
+                    "path": str(request.url.path)
+                }
+            )
 
 # ---------------- Auth helpers (DEPRECATED - Use security.py module) ----------------
 # Old auth helpers kept for backward compatibility but should not be used
@@ -2577,19 +2629,168 @@ async def refresh_token(request: Request, refresh_token: str = Form(...)):
 
 @app.post("/auth/logout")
 @limiter.limit("20/minute")
-async def logout(request: Request, current_user: dict = Depends(get_current_active_user)):
+async def logout(
+    request: Request, 
+    token: str = Depends(oauth2_scheme),
+    current_user: dict = Depends(get_current_active_user)
+):
     """
-    Logout endpoint (for audit logging).
-    In production, implement token blacklisting.
+    Logout endpoint with token blacklisting.
+    Revokes the current access token to prevent further use.
     """
+    # Blacklist the current token
+    blacklist_token(
+        token=token,
+        user_id=current_user["id"],
+        reason="logout"
+    )
+    
+    # Log the logout event
     log_audit_event(
         action="logout",
         status="success",
         user_id=current_user["id"],
-        user_email=current_user["email"]
+        user_email=current_user["email"],
+        ip_address=request.client.host if request.client else None
     )
     
-    return {"message": "Successfully logged out"}
+    return {
+        "message": "Successfully logged out",
+        "detail": "Token has been revoked and can no longer be used"
+    }
+
+@app.post("/auth/cleanup-tokens")
+@limiter.limit("10/hour")
+async def cleanup_tokens(request: Request, current_user: dict = Depends(get_current_admin_user)):
+    """
+    Admin endpoint to cleanup expired tokens from blacklist.
+    Requires admin role.
+    """
+    deleted_count = cleanup_expired_tokens()
+    
+    log_audit_event(
+        action="token_cleanup",
+        status="success",
+        user_id=current_user["id"],
+        user_email=current_user["email"],
+        details=f"Cleaned up {deleted_count} expired tokens"
+    )
+    
+    return {
+        "message": f"Successfully cleaned up {deleted_count} expired tokens",
+        "deleted_count": deleted_count
+    }
+
+# ============================================================================
+# SECURITY MONITORING & AUDIT LOG ENDPOINTS (Phase 3)
+# ============================================================================
+
+@app.get("/api/admin/security/alerts")
+@limiter.limit("30/minute")
+async def get_security_alerts(
+    request: Request,
+    limit: int = Query(10, le=100),
+    current_user: dict = Depends(get_current_admin_user)
+):
+    """
+    Get recent security alerts (failed logins, unauthorized access, etc.).
+    Admin only.
+    """
+    alerts = SecurityMonitor.get_security_alerts(limit=limit)
+    return {
+        "alerts": alerts,
+        "count": len(alerts)
+    }
+
+@app.get("/api/admin/security/activity")
+@limiter.limit("30/minute")
+async def get_activity_summary(
+    request: Request,
+    hours: int = Query(24, ge=1, le=168),
+    current_user: dict = Depends(get_current_admin_user)
+):
+    """
+    Get security activity summary for the specified time period.
+    Admin only.
+    """
+    summary = SecurityMonitor.get_activity_summary(hours=hours)
+    return summary
+
+@app.get("/api/admin/security/check-user")
+@limiter.limit("30/minute")
+async def check_user_activity(
+    request: Request,
+    email: str = Query(...),
+    current_user: dict = Depends(get_current_admin_user)
+):
+    """
+    Check for suspicious activity for a specific user.
+    Admin only.
+    """
+    failed_logins = SecurityMonitor.check_failed_login_attempts(email)
+    return {
+        "email": email,
+        "failed_login_check": failed_logins
+    }
+
+@app.get("/api/admin/audit-logs")
+@limiter.limit("30/minute")
+async def get_audit_logs(
+    request: Request,
+    limit: int = Query(50, le=500),
+    offset: int = Query(0, ge=0),
+    action: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    user_id: Optional[int] = Query(None),
+    current_user: dict = Depends(get_current_admin_user)
+):
+    """
+    Get audit logs with filtering and pagination.
+    Admin only.
+    """
+    with db() as conn:
+        # Build query
+        query = "SELECT * FROM audit_logs WHERE 1=1"
+        params = []
+        
+        if action:
+            query += " AND action = ?"
+            params.append(action)
+        
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+        
+        if user_id:
+            query += " AND user_id = ?"
+            params.append(user_id)
+        
+        query += " ORDER BY timestamp DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        
+        logs = conn.execute(query, params).fetchall()
+        
+        # Get total count
+        count_query = "SELECT COUNT(*) as count FROM audit_logs WHERE 1=1"
+        count_params = []
+        if action:
+            count_query += " AND action = ?"
+            count_params.append(action)
+        if status:
+            count_query += " AND status = ?"
+            count_params.append(status)
+        if user_id:
+            count_query += " AND user_id = ?"
+            count_params.append(user_id)
+        
+        total = conn.execute(count_query, count_params).fetchone()["count"]
+        
+        return {
+            "logs": [dict(log) for log in logs],
+            "total": total,
+            "limit": limit,
+            "offset": offset
+        }
 
 @app.get("/auth/me")
 @limiter.limit("30/minute")
