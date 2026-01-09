@@ -55,7 +55,9 @@ from security import (
     init_audit_log_table,
     log_audit_event,
     ACCESS_TOKEN_EXPIRE_MINUTES,
-    REFRESH_TOKEN_EXPIRE_DAYS
+    REFRESH_TOKEN_EXPIRE_DAYS,
+    get_cors_config,
+    get_csp_header
 )
 
 # ---------------- Worker Pool Configuration ----------------
@@ -111,6 +113,14 @@ templates = Jinja2Templates(directory="templates")
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# Configure CORS
+from fastapi.middleware.cors import CORSMiddleware
+cors_config = get_cors_config()
+app.add_middleware(
+    CORSMiddleware,
+    **cors_config
+)
 
 # Serve /static/* from the local "static" folder
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -1155,6 +1165,8 @@ async def security_headers(request: Request, call_next):
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["X-XSS-Protection"] = "1; mode=block"
     response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    response.headers["Content-Security-Policy"] = get_csp_header()
+    response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
     return response
 
 # ---------------- Auth helpers (DEPRECATED - Use security.py module) ----------------

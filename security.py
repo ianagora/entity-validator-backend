@@ -254,6 +254,76 @@ def sanitize_sql_input(value: str) -> str:
 limiter = Limiter(key_func=get_remote_address, enabled=RATE_LIMIT_ENABLED)
 
 # ==============================================================================
+# CORS CONFIGURATION (Phase 2: API Security)
+# ==============================================================================
+
+def get_cors_config():
+    """
+    Get CORS configuration based on environment.
+    Returns dict with origins, methods, headers, and credentials settings.
+    """
+    environment = os.getenv("ENVIRONMENT", "development")
+    
+    if environment == "production":
+        # Production: Strict CORS - only allow specific frontend domains
+        return {
+            "allow_origins": [
+                "https://project-a4de28cf-dev.pages.dev",  # Production frontend
+                "https://*.project-a4de28cf-dev.pages.dev",  # All preview deployments
+                # Add your custom domain here when ready
+                # "https://yourapp.com",
+            ],
+            "allow_credentials": True,  # Allow cookies/auth headers
+            "allow_methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+            "allow_headers": ["*"],
+            "expose_headers": ["Content-Range", "X-Total-Count"],
+            "max_age": 600,  # Cache preflight for 10 minutes
+        }
+    else:
+        # Development: Permissive CORS for testing
+        return {
+            "allow_origins": ["*"],  # Allow all origins in dev
+            "allow_credentials": False,  # Don't send credentials with wildcard
+            "allow_methods": ["*"],
+            "allow_headers": ["*"],
+            "expose_headers": ["*"],
+            "max_age": 600,
+        }
+
+def get_csp_header():
+    """
+    Get Content Security Policy header value.
+    Prevents XSS, clickjacking, and other code injection attacks.
+    """
+    environment = os.getenv("ENVIRONMENT", "development")
+    
+    if environment == "production":
+        # Production: Strict CSP
+        return (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline' https://cdn.tailwindcss.com https://cdn.jsdelivr.net; "
+            "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+            "img-src 'self' data: https:; "
+            "font-src 'self' https://cdn.jsdelivr.net; "
+            "connect-src 'self' https://entity-validator-backend-production-6962.up.railway.app; "
+            "frame-ancestors 'none'; "
+            "base-uri 'self'; "
+            "form-action 'self';"
+        )
+    else:
+        # Development: Permissive CSP
+        return (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline' 'unsafe-eval' https:; "
+            "style-src 'self' 'unsafe-inline' https:; "
+            "img-src 'self' data: https:; "
+            "font-src 'self' https:; "
+            "connect-src 'self' https: http: ws:; "
+            "frame-ancestors 'self'; "
+            "base-uri 'self';"
+        )
+
+# ==============================================================================
 # AUDIT LOGGING (Phase 7: Logging & Monitoring)
 # ==============================================================================
 
@@ -393,6 +463,114 @@ def hash_sensitive_data(data: str) -> str:
 # from cryptography.fernet import Fernet
 # ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY")
 # fernet = Fernet(ENCRYPTION_KEY.encode())
+
+# ==============================================================================
+# INITIALIZATION
+# ==============================================================================
+
+# ==============================================================================
+# API KEY MANAGEMENT (Phase 2: API Security)
+# ==============================================================================
+
+def validate_api_key(api_key: str, expected_key_env: str = "BACKEND_API_KEY") -> bool:
+    """
+    Validate an API key against the expected environment variable.
+    
+    Args:
+        api_key: The API key to validate
+        expected_key_env: Environment variable name containing the expected key
+        
+    Returns:
+        True if valid, False otherwise
+    """
+    expected_key = os.getenv(expected_key_env)
+    if not expected_key:
+        print(f"[SECURITY WARNING] {expected_key_env} not configured")
+        return False
+    
+    # Use constant-time comparison to prevent timing attacks
+    return secrets.compare_digest(api_key, expected_key)
+
+def require_api_key(api_key_header: str = "X-API-Key", env_var: str = "BACKEND_API_KEY"):
+    """
+    Dependency to require API key in request headers.
+    
+    Usage:
+        @app.get("/api/protected")
+        async def protected_endpoint(api_key_valid: bool = Depends(require_api_key())):
+            if not api_key_valid:
+                raise HTTPException(status_code=403, detail="Invalid API key")
+            ...
+    """
+    async def _require_api_key(request: Request) -> bool:
+        api_key = request.headers.get(api_key_header, "")
+        if not api_key:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Missing {api_key_header} header"
+            )
+        
+        if not validate_api_key(api_key, env_var):
+            log_audit_event(
+                action="api_key_validation_failed",
+                status="failed",
+                ip_address=request.client.host if request.client else None,
+                details=f"Invalid API key attempt from {request.client.host if request.client else 'unknown'}"
+            )
+            raise HTTPException(
+                status_code=403,
+                detail="Invalid API key"
+            )
+        
+        return True
+    
+    return _require_api_key
+
+# ==============================================================================
+# ENVIRONMENT VARIABLE SECURITY (Phase 2: Data Protection)
+# ==============================================================================
+
+def mask_sensitive_env_vars() -> Dict[str, str]:
+    """
+    Get environment variables with sensitive values masked.
+    Safe for logging and debugging.
+    
+    Returns:
+        Dict of environment variables with sensitive values masked
+    """
+    sensitive_patterns = [
+        "KEY", "SECRET", "PASSWORD", "TOKEN", "CREDENTIAL",
+        "API", "AUTH", "PRIVATE", "SALT"
+    ]
+    
+    masked_env = {}
+    for key, value in os.environ.items():
+        # Check if key contains sensitive pattern
+        is_sensitive = any(pattern in key.upper() for pattern in sensitive_patterns)
+        
+        if is_sensitive and value:
+            # Mask sensitive values (show first 4 chars only)
+            masked_env[key] = value[:4] + "*" * (len(value) - 4) if len(value) > 4 else "****"
+        else:
+            masked_env[key] = value
+    
+    return masked_env
+
+def validate_required_env_vars(required_vars: List[str]) -> Dict[str, bool]:
+    """
+    Validate that required environment variables are set.
+    
+    Args:
+        required_vars: List of required environment variable names
+        
+    Returns:
+        Dict mapping variable name to whether it's set
+    """
+    results = {}
+    for var in required_vars:
+        results[var] = bool(os.getenv(var))
+    
+    return results
 
 # ==============================================================================
 # INITIALIZATION
