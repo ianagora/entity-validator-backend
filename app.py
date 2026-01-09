@@ -2480,7 +2480,7 @@ def enqueue_enrich_charity(item_id: int):
 async def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends()):
     """
     Login endpoint with JWT token generation.
-    Rate limited to 5 attempts per minute.
+    Rate limited to 10 attempts per minute to prevent brute force attacks.
     """
     # Log login attempt
     log_audit_event(
@@ -3360,7 +3360,8 @@ async def api_batch_upload(file: UploadFile = File(...)):
             pass
 
 @app.get("/api/batches")
-async def api_get_batches():
+@limiter.limit("100/minute")
+async def api_get_batches(request: Request):
     """Get all batch runs with statistics"""
     try:
         with db() as conn:
@@ -3406,7 +3407,8 @@ async def api_get_batches():
         )
 
 @app.get("/api/batch/{batch_id}/status")
-async def api_get_batch_status(batch_id: int):
+@limiter.limit("100/minute")
+async def api_get_batch_status(request: Request, batch_id: int):
     """Get status for a specific batch"""
     try:
         with db() as conn:
@@ -3911,7 +3913,8 @@ def build_screening_list(bundle: dict, shareholders: list, item: dict) -> dict:
     return screening
 
 @app.get("/api/batch/{batch_id}/items")
-async def api_get_batch_items(batch_id: int, limit: int = 100, offset: int = 0):
+@limiter.limit("60/minute")
+async def api_get_batch_items(request: Request, batch_id: int, limit: int = 100, offset: int = 0):
     """Get items for a specific batch"""
     try:
         with db() as conn:
@@ -4053,7 +4056,8 @@ def reset_item_enrichment(item_id: int):
         )
 
 @app.get("/api/item/{item_id}")
-async def api_get_item_details(item_id: int):
+@limiter.limit("100/minute")
+async def api_get_item_details(request: Request, item_id: int):
     """Get full details for a specific item including enriched data and shareholders"""
     try:
         with db() as conn:
@@ -4451,7 +4455,8 @@ async def save_svg(item_id: int, request: Request):
         )
 
 @app.get("/api/item/{item_id}/svg")
-async def get_svg(item_id: int):
+@limiter.limit("60/minute")
+async def get_svg(request: Request, item_id: int):
     """
     Retrieve saved SVG file for an item.
     Returns the SVG file if it exists, 404 otherwise.
@@ -4499,7 +4504,8 @@ async def get_svg(item_id: int):
         )
 
 @app.get("/api/svgs/list")
-async def list_svgs():
+@limiter.limit("100/minute")
+async def list_svgs(request: Request):
     """
     List all saved SVG files in the svg_exports directory.
     Useful for debugging and management.
@@ -4552,7 +4558,8 @@ async def list_svgs():
         )
 
 @app.get("/api/svgs/download-all")
-async def download_all_svgs():
+@limiter.limit("10/minute")  # Lower limit for large file downloads
+async def download_all_svgs(request: Request):
     """
     Download all saved SVGs as a ZIP file.
     """
