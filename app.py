@@ -6325,4 +6325,20 @@ async def clear_database(request: Request, current_user: dict = Depends(get_curr
 
 @app.get("/health")
 def health():
-    return {"status": "healthy"}
+    return {
+        "status": "healthy",
+        "version": "2.0.1-svg-auto-gen-fix",
+        "svg_fix_deployed": True,
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+    }
+
+@app.get("/api/debug/svg-fix-status")
+def svg_fix_status():
+    """Debug endpoint to verify SVG fix is deployed"""
+    return {
+        "svg_fix_deployed": True,
+        "fix_description": "Ownership tree created before metrics calculation",
+        "expected_behavior": "ALL enriched items get SVGs automatically",
+        "version": "2.0.1",
+        "deployment_check": "If you see this, the fix IS deployed"
+    }
