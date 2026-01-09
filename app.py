@@ -17,10 +17,14 @@ import re
 import re as _re
 import math
 from pandas import json_normalize
-from fastapi import FastAPI, Request, UploadFile, File, Form
+from fastapi import FastAPI, Request, UploadFile, File, Form, Depends, HTTPException, status
 from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
+from fastapi.security import OAuth2PasswordRequestForm
 from starlette.status import HTTP_302_FOUND
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 from resolver import ccew_candidates
 from resolver import canonicalise_name
 from schema import SCHEMA_ENTITY_FIELDS, LP_PREFIX, LP_COUNT
@@ -35,6 +39,24 @@ from shareholder_information import identify_parent_companies
 
 # corporate structure (recursive ownership tree)
 from corporate_structure import build_ownership_tree, flatten_ownership_tree
+
+# Security & Authentication
+from security import (
+    get_current_user,
+    get_current_active_user,
+    get_current_admin_user,
+    create_access_token,
+    create_refresh_token,
+    verify_password,
+    get_password_hash,
+    validate_file_upload,
+    UserLogin,
+    UserCreate,
+    init_audit_log_table,
+    log_audit_event,
+    ACCESS_TOKEN_EXPIRE_MINUTES,
+    REFRESH_TOKEN_EXPIRE_DAYS
+)
 
 # ---------------- Worker Pool Configuration ----------------
 # CRITICAL: Limit concurrent enrichments to prevent memory exhaustion
@@ -82,8 +104,13 @@ async def lifespan(app: FastAPI):
     # Shutdown logic (if needed)
     pass
 
-app = FastAPI(title="Entity Batch Validator (Queues + Admin, no-login)", lifespan=lifespan)
+app = FastAPI(title="Entity Batch Validator with Security", lifespan=lifespan)
 templates = Jinja2Templates(directory="templates")
+
+# Initialize rate limiter
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Serve /static/* from the local "static" folder
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -1095,6 +1122,9 @@ def init_db():
         )""")
         for role in ("admin", "reviewer", "viewer"):
             c.execute("INSERT OR IGNORE INTO roles (name) VALUES (?)", (role,))
+        
+        # Initialize audit log table for security logging
+        init_audit_log_table()
 
 def _flatten_enriched(obj, prefix=""):
     """Flatten dict/list -> { 'a.b.c': value } for easy table rendering."""
@@ -1118,18 +1148,27 @@ def _flatten_enriched(obj, prefix=""):
 
 # ---------------- Middleware ----------------
 @app.middleware("http")
-async def no_referrer_everywhere(request: Request, call_next):
+async def security_headers(request: Request, call_next):
+    """Add security headers to all responses."""
     response = await call_next(request)
     response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     return response
 
-# ---------------- Auth helpers (login-free stubs) ----------------
-def hash_password(raw: str) -> str:
-    # Simple SHA256 so admin screens can save users without bcrypt
+# ---------------- Auth helpers (DEPRECATED - Use security.py module) ----------------
+# Old auth helpers kept for backward compatibility but should not be used
+# Use functions from security.py: verify_password(), get_password_hash()
+
+def _legacy_hash_password(raw: str) -> str:
+    """DEPRECATED: Insecure SHA256 - DO NOT USE. Use security.get_password_hash() instead."""
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
-def verify_password(raw: str, hashed: str) -> bool:
-    return hash_password(raw) == hashed
+def _legacy_verify_password(raw: str, hashed: str) -> bool:
+    """DEPRECATED: Insecure verification - DO NOT USE. Use security.verify_password() instead."""
+    return _legacy_hash_password(raw) == hashed
 
 def get_user_by_email(conn: sqlite3.Connection, email: str):
     return conn.execute("SELECT * FROM users WHERE email=? AND is_active=1", (email.lower(),)).fetchone()
@@ -2358,6 +2397,200 @@ def enqueue_enrich_charity(item_id: int):
     """
     enrichment_executor.submit(enrich_charity_one, item_id)
 
+# ============================================================================
+# AUTHENTICATION & AUTHORIZATION ENDPOINTS (Phase 1: Critical Security)
+# ============================================================================
+
+@app.post("/auth/login")
+@limiter.limit("5/minute")
+async def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends()):
+    """
+    Login endpoint with JWT token generation.
+    Rate limited to 5 attempts per minute.
+    """
+    # Log login attempt
+    log_audit_event(
+        action="login_attempt",
+        status="pending",
+        user_email=form_data.username,
+        ip_address=request.client.host,
+        user_agent=request.headers.get("user-agent")
+    )
+    
+    with db() as conn:
+        user = conn.execute(
+            "SELECT * FROM users WHERE email=? AND is_active=1",
+            (form_data.username.lower(),)
+        ).fetchone()
+        
+        if not user:
+            log_audit_event(
+                action="login_failed",
+                status="failed",
+                user_email=form_data.username,
+                details="User not found or inactive"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect email or password",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        
+        # Verify password (check if it's bcrypt or legacy SHA256)
+        password_valid = False
+        try:
+            # Try bcrypt first (secure)
+            from security import verify_password as verify_bcrypt
+            password_valid = verify_bcrypt(form_data.password, user["password_hash"])
+        except Exception:
+            # Fallback to legacy SHA256 (insecure - for migration only)
+            password_valid = _legacy_verify_password(form_data.password, user["password_hash"])
+            
+            if password_valid:
+                # Upgrade to bcrypt on successful login
+                from security import get_password_hash
+                new_hash = get_password_hash(form_data.password)
+                conn.execute(
+                    "UPDATE users SET password_hash=? WHERE id=?",
+                    (new_hash, user["id"])
+                )
+        
+        if not password_valid:
+            log_audit_event(
+                action="login_failed",
+                status="failed",
+                user_id=user["id"],
+                user_email=user["email"],
+                details="Invalid password"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect email or password",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        
+        # Create access token
+        from datetime import timedelta
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(
+            data={"sub": str(user["id"])},
+            expires_delta=access_token_expires
+        )
+        
+        # Create refresh token
+        refresh_token = create_refresh_token(data={"sub": str(user["id"])})
+        
+        # Log successful login
+        log_audit_event(
+            action="login_success",
+            status="success",
+            user_id=user["id"],
+            user_email=user["email"],
+            ip_address=request.client.host
+        )
+        
+        return {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_type": "bearer",
+            "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60
+        }
+
+@app.post("/auth/refresh")
+@limiter.limit("10/minute")
+async def refresh_token(request: Request, refresh_token: str = Form(...)):
+    """
+    Refresh access token using refresh token.
+    Rate limited to 10 requests per minute.
+    """
+    try:
+        from security import decode_token
+        payload = decode_token(refresh_token)
+        
+        if payload.get("type") != "refresh":
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token type"
+            )
+        
+        user_id = payload.get("sub")
+        if not user_id:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token"
+            )
+        
+        # Verify user still exists and is active
+        with db() as conn:
+            user = conn.execute(
+                "SELECT * FROM users WHERE id=? AND is_active=1",
+                (user_id,)
+            ).fetchone()
+            
+            if not user:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="User not found or inactive"
+                )
+        
+        # Create new access token
+        from datetime import timedelta
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        new_access_token = create_access_token(
+            data={"sub": user_id},
+            expires_delta=access_token_expires
+        )
+        
+        log_audit_event(
+            action="token_refresh",
+            status="success",
+            user_id=int(user_id)
+        )
+        
+        return {
+            "access_token": new_access_token,
+            "token_type": "bearer",
+            "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60
+        }
+        
+    except Exception as e:
+        log_audit_event(
+            action="token_refresh_failed",
+            status="failed",
+            details=str(e)
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid refresh token"
+        )
+
+@app.post("/auth/logout")
+@limiter.limit("20/minute")
+async def logout(request: Request, current_user: dict = Depends(get_current_active_user)):
+    """
+    Logout endpoint (for audit logging).
+    In production, implement token blacklisting.
+    """
+    log_audit_event(
+        action="logout",
+        status="success",
+        user_id=current_user["id"],
+        user_email=current_user["email"]
+    )
+    
+    return {"message": "Successfully logged out"}
+
+@app.get("/auth/me")
+@limiter.limit("30/minute")
+async def get_current_user_info(current_user: dict = Depends(get_current_active_user)):
+    """Get current authenticated user information."""
+    return {
+        "id": current_user["id"],
+        "email": current_user["email"],
+        "full_name": current_user.get("full_name"),
+        "is_active": current_user.get("is_active")
+    }
+
 # ---------------- Admin: Users CRUD (login-free) ----------------
 @app.get("/admin/users", response_class=HTMLResponse)
 def admin_users(request: Request):
@@ -2468,7 +2701,34 @@ def upload_page(request: Request):
     return templates.TemplateResponse("batchupload.html", {"request": request})
 
 @app.post("/batch-upload", response_class=HTMLResponse)
-async def batch_upload(request: Request, file: UploadFile = File(...)):
+@limiter.limit("10/hour")  # Rate limit file uploads
+async def batch_upload(request: Request, file: UploadFile = File(...), current_user: dict = Depends(get_current_user)):
+    """
+    Batch upload endpoint with security validation.
+    Rate limited to 10 uploads per hour.
+    """
+    # Read file content
+    contents = await file.read()
+    
+    # Validate file upload
+    try:
+        validate_file_upload(file.filename, contents)
+    except HTTPException as e:
+        return templates.TemplateResponse(
+            "batchupload.html",
+            {"request": request, "error": e.detail}
+        )
+    
+    # Log upload attempt
+    if current_user:
+        log_audit_event(
+            action="file_upload",
+            status="pending",
+            user_id=current_user["id"],
+            user_email=current_user["email"],
+            details=f"Uploading {file.filename} ({len(contents)} bytes)"
+        )
+    
     suffix = os.path.splitext(file.filename)[-1].lower()
     if suffix not in [".csv", ".xlsx", ".xls"]:
         return templates.TemplateResponse(
@@ -2478,8 +2738,7 @@ async def batch_upload(request: Request, file: UploadFile = File(...)):
 
     # save upload to a temp file
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        contents = await file.read()
-        tmp.write(contents)
+        tmp.write(contents)  # contents already read above
         tmp_path = tmp.name
 
     out_dir = ensure_out_dir()
@@ -5733,29 +5992,41 @@ def download(path: str):
     return FileResponse(abs_path, filename=os.path.basename(abs_path))
 
 @app.post("/api/admin/clear-database")
-def clear_database(request: Request):
+@limiter.limit("3/hour")  # Strict rate limit for destructive operation
+async def clear_database(request: Request, current_user: dict = Depends(get_current_admin_user)):
     """
     Admin endpoint to clear all data from the DEV database.
-    Requires X-Admin-Key header for security.
+    Requires JWT authentication with admin role.
+    Rate limited to 3 requests per hour.
     DEV Environment Only.
     
-    Usage:
+    Usage with JWT:
     curl -X POST https://your-backend.railway.app/api/admin/clear-database \
-      -H "X-Admin-Key: clear-dev-db-2024"
+      -H "Authorization: Bearer YOUR_JWT_TOKEN"
     """
     # SAFETY: Only allow in DEV environment
     environment = os.getenv("ENVIRONMENT", "development")
     if environment == "production":
+        log_audit_event(
+            action="clear_database_blocked",
+            status="blocked",
+            user_id=current_user["id"],
+            details="Attempted in production environment"
+        )
         raise HTTPException(status_code=403, detail="This endpoint is only available in DEV environment")
     
-    # Check admin key
-    admin_key = request.headers.get("X-Admin-Key", "")
-    expected_key = os.getenv("ADMIN_KEY", "clear-dev-db-2024")
-    
-    if admin_key != expected_key:
-        raise HTTPException(status_code=403, detail="Invalid admin key")
+    # Admin authentication already verified by get_current_admin_user dependency
     
     try:
+        # Log the operation before execution
+        log_audit_event(
+            action="clear_database_start",
+            status="pending",
+            user_id=current_user["id"],
+            user_email=current_user["email"],
+            ip_address=request.client.host
+        )
+        
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         
@@ -5775,16 +6046,36 @@ def clear_database(request: Request):
         conn.commit()
         conn.close()
         
+        # Log successful operation
+        log_audit_event(
+            action="clear_database_success",
+            status="success",
+            user_id=current_user["id"],
+            user_email=current_user["email"],
+            details=f"Deleted {items_count} items and {batches_count} batches"
+        )
+        
         return {
             "success": True,
             "message": "Database cleared successfully",
             "items_deleted": items_count,
             "batches_deleted": batches_count,
             "database": DB_PATH,
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now().isoformat(),
+            "cleared_by": current_user["email"]
         }
     except Exception as e:
         import traceback
+        
+        # Log failed operation
+        log_audit_event(
+            action="clear_database_failed",
+            status="failed",
+            user_id=current_user["id"],
+            user_email=current_user["email"],
+            details=str(e)
+        )
+        
         return {
             "success": False,
             "error": str(e),

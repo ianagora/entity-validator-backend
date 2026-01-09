@@ -4,17 +4,11 @@ FROM python:3.11.7-slim-bookworm
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies including Tesseract OCR
-RUN apt-get update && apt-get install -y \
-    tesseract-ocr \
-    tesseract-ocr-eng \
-    poppler-utils \
-    libpq-dev \
+# Install only essential system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
+    libpq-dev \
     && rm -rf /var/lib/apt/lists/*
-
-# Verify Tesseract installation
-RUN tesseract --version
 
 # Copy requirements first for better caching
 COPY requirements.txt .
