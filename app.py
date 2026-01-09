@@ -1123,8 +1123,7 @@ def init_db():
         for role in ("admin", "reviewer", "viewer"):
             c.execute("INSERT OR IGNORE INTO roles (name) VALUES (?)", (role,))
         
-        # Initialize audit log table for security logging
-        init_audit_log_table()
+        # Note: Audit log table is initialized lazily on first use by security.py
 
 def _flatten_enriched(obj, prefix=""):
     """Flatten dict/list -> { 'a.b.c': value } for easy table rendering."""
@@ -2702,10 +2701,15 @@ def upload_page(request: Request):
 
 @app.post("/batch-upload", response_class=HTMLResponse)
 @limiter.limit("10/hour")  # Rate limit file uploads
-async def batch_upload(request: Request, file: UploadFile = File(...), current_user: dict = Depends(get_current_user)):
+async def batch_upload(
+    request: Request, 
+    file: UploadFile = File(...), 
+    current_user: Optional[dict] = Depends(get_current_user)  # Optional auth
+):
     """
     Batch upload endpoint with security validation.
     Rate limited to 10 uploads per hour.
+    Authentication is optional for backward compatibility.
     """
     # Read file content
     contents = await file.read()

@@ -257,9 +257,18 @@ limiter = Limiter(key_func=get_remote_address, enabled=RATE_LIMIT_ENABLED)
 # AUDIT LOGGING (Phase 7: Logging & Monitoring)
 # ==============================================================================
 
-def init_audit_log_table():
-    """Initialize audit log table if it doesn't exist."""
-    conn = get_db_connection()
+def init_audit_log_table(conn=None):
+    """
+    Initialize audit log table if it doesn't exist.
+    
+    Args:
+        conn: Optional database connection. If None, creates a new connection.
+    """
+    should_close = False
+    if conn is None:
+        conn = get_db_connection()
+        should_close = True
+    
     try:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS audit_logs (
@@ -286,9 +295,11 @@ def init_audit_log_table():
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_logs(action)
         """)
-        conn.commit()
+        if should_close:
+            conn.commit()
     finally:
-        conn.close()
+        if should_close:
+            conn.close()
 
 def log_audit_event(
     action: str,
@@ -304,6 +315,13 @@ def log_audit_event(
     """Log an audit event to the database."""
     conn = get_db_connection()
     try:
+        # Lazy initialization: ensure audit_logs table exists
+        try:
+            conn.execute("SELECT 1 FROM audit_logs LIMIT 1")
+        except sqlite3.OperationalError:
+            # Table doesn't exist, create it
+            init_audit_log_table(conn)
+        
         conn.execute("""
             INSERT INTO audit_logs (
                 timestamp, user_id, user_email, action, 
