@@ -2581,7 +2581,7 @@ async def logout(request: Request, current_user: dict = Depends(get_current_acti
 
 @app.get("/auth/me")
 @limiter.limit("30/minute")
-async def get_current_user_info(current_user: dict = Depends(get_current_active_user)):
+async def get_current_user_info(request: Request, current_user: dict = Depends(get_current_active_user)):
     """Get current authenticated user information."""
     return {
         "id": current_user["id"],
