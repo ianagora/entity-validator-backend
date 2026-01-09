@@ -1,5 +1,5 @@
 # app.py
-import os, json, tempfile, sqlite3, threading, hashlib, io, csv
+import os, json, tempfile, sqlite3, threading, hashlib, io, csv, zipfile
 from datetime import datetime, date
 from contextlib import contextmanager, asynccontextmanager
 from typing import Optional, List, Dict, Any
@@ -17,10 +17,14 @@ import re
 import re as _re
 import math
 from pandas import json_normalize
-from fastapi import FastAPI, Request, UploadFile, File, Form
+from fastapi import FastAPI, Request, UploadFile, File, Form, Depends, HTTPException, status
 from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
+from fastapi.security import OAuth2PasswordRequestForm
 from starlette.status import HTTP_302_FOUND
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 from resolver import ccew_candidates
 from resolver import canonicalise_name
 from schema import SCHEMA_ENTITY_FIELDS, LP_PREFIX, LP_COUNT
@@ -35,6 +39,31 @@ from shareholder_information import identify_parent_companies
 
 # corporate structure (recursive ownership tree)
 from corporate_structure import build_ownership_tree, flatten_ownership_tree
+
+# Security & Authentication
+from security import (
+    get_current_user,
+    get_current_active_user,
+    get_current_admin_user,
+    create_access_token,
+    create_refresh_token,
+    verify_password,
+    get_password_hash,
+    validate_file_upload,
+    UserLogin,
+    UserCreate,
+    init_audit_log_table,
+    log_audit_event,
+    ACCESS_TOKEN_EXPIRE_MINUTES,
+    REFRESH_TOKEN_EXPIRE_DAYS,
+    get_cors_config,
+    get_csp_header,
+    blacklist_token,
+    is_token_blacklisted,
+    cleanup_expired_tokens,
+    oauth2_scheme,
+    SecurityMonitor
+)
 
 # ---------------- Worker Pool Configuration ----------------
 # CRITICAL: Limit concurrent enrichments to prevent memory exhaustion
@@ -82,8 +111,21 @@ async def lifespan(app: FastAPI):
     # Shutdown logic (if needed)
     pass
 
-app = FastAPI(title="Entity Batch Validator (Queues + Admin, no-login)", lifespan=lifespan)
+app = FastAPI(title="Entity Batch Validator with Security", lifespan=lifespan)
 templates = Jinja2Templates(directory="templates")
+
+# Initialize rate limiter
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# Configure CORS
+from fastapi.middleware.cors import CORSMiddleware
+cors_config = get_cors_config()
+app.add_middleware(
+    CORSMiddleware,
+    **cors_config
+)
 
 # Serve /static/* from the local "static" folder
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -1006,6 +1048,15 @@ def init_db():
             # Column already exists
             pass
 
+        # NEW: ensure svg_path exists for SVG storage
+        try:
+            conn.execute('ALTER TABLE items ADD COLUMN "svg_path" TEXT')
+            existing_cols_lower.add("svg_path")
+            print("[init_db] Added svg_path column to items table")
+        except sqlite3.OperationalError:
+            # Column already exists
+            pass
+
         # add any missing exact-schema columns (526)
         for col in ALL_SCHEMA_FIELDS:
             if col.lower() not in existing_cols_lower:
@@ -1086,6 +1137,8 @@ def init_db():
         )""")
         for role in ("admin", "reviewer", "viewer"):
             c.execute("INSERT OR IGNORE INTO roles (name) VALUES (?)", (role,))
+        
+        # Note: Audit log table is initialized lazily on first use by security.py
 
 def _flatten_enriched(obj, prefix=""):
     """Flatten dict/list -> { 'a.b.c': value } for easy table rendering."""
@@ -1109,18 +1162,76 @@ def _flatten_enriched(obj, prefix=""):
 
 # ---------------- Middleware ----------------
 @app.middleware("http")
-async def no_referrer_everywhere(request: Request, call_next):
+async def security_headers(request: Request, call_next):
+    """Add security headers to all responses."""
     response = await call_next(request)
     response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    response.headers["Content-Security-Policy"] = get_csp_header()
+    response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
     return response
 
-# ---------------- Auth helpers (login-free stubs) ----------------
-def hash_password(raw: str) -> str:
-    # Simple SHA256 so admin screens can save users without bcrypt
+@app.middleware("http")
+async def secure_error_handling(request: Request, call_next):
+    """
+    Secure error handling middleware.
+    Prevents information leakage in error responses.
+    """
+    try:
+        response = await call_next(request)
+        return response
+    except Exception as e:
+        # Log the full error server-side
+        import traceback
+        error_detail = traceback.format_exc()
+        print(f"[ERROR] {request.method} {request.url.path}: {str(e)}")
+        print(error_detail)
+        
+        # Log to audit system
+        log_audit_event(
+            action="internal_error",
+            status="failed",
+            ip_address=request.client.host if request.client else None,
+            details=f"{request.method} {request.url.path}: {str(e)[:200]}"
+        )
+        
+        # Return generic error to client (don't leak stack traces)
+        environment = os.getenv("ENVIRONMENT", "development")
+        if environment == "production":
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "error": "Internal server error",
+                    "message": "An unexpected error occurred. Please contact support if the problem persists.",
+                    "request_id": str(hash(f"{request.url.path}{datetime.now().isoformat()}"))
+                }
+            )
+        else:
+            # In development, show more details for debugging
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "error": "Internal server error",
+                    "message": str(e),
+                    "type": type(e).__name__,
+                    "path": str(request.url.path)
+                }
+            )
+
+# ---------------- Auth helpers (DEPRECATED - Use security.py module) ----------------
+# Old auth helpers kept for backward compatibility but should not be used
+# Use functions from security.py: verify_password(), get_password_hash()
+
+def _legacy_hash_password(raw: str) -> str:
+    """DEPRECATED: Insecure SHA256 - DO NOT USE. Use security.get_password_hash() instead."""
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
-def verify_password(raw: str, hashed: str) -> bool:
-    return hash_password(raw) == hashed
+def _legacy_verify_password(raw: str, hashed: str) -> bool:
+    """DEPRECATED: Insecure verification - DO NOT USE. Use security.verify_password() instead."""
+    return _legacy_hash_password(raw) == hashed
 
 def get_user_by_email(conn: sqlite3.Connection, email: str):
     return conn.execute("SELECT * FROM users WHERE email=? AND is_active=1", (email.lower(),)).fetchone()
@@ -1510,6 +1621,192 @@ def bundle_to_xlsx(bundle: dict, xlsx_path: str):
 # ---------------- Enrichment worker ----------------
 
 # ---------------- Companies House enrichment ----------------
+def generate_and_save_ownership_svg(item_id: int, ownership_tree: dict, item: dict) -> str:
+    """
+    Generate a complete multi-layer ownership structure SVG from the ownership tree
+    and save it to the svg_exports directory.
+    
+    Returns the file path of the saved SVG.
+    """
+    import re
+    from datetime import datetime
+    
+    # Ensure svg_exports directory exists
+    svg_dir = "svg_exports"
+    os.makedirs(svg_dir, exist_ok=True)
+    
+    # Get company details
+    company_name = ownership_tree.get("company_name", item.get("input_name", "Unknown"))
+    company_number = ownership_tree.get("company_number", item.get("company_number", "UNKNOWN"))
+    
+    # Build the SVG
+    svg_content = build_multi_layer_svg(ownership_tree, company_name, company_number)
+    
+    # Generate filename
+    safe_name = re.sub(r'[^\w\s-]', '', company_name).strip().replace(' ', '_')[:50]
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    filename = f"{safe_name}_{company_number}_item{item_id}_{timestamp}.svg"
+    filepath = os.path.join(svg_dir, filename)
+    
+    # Save SVG
+    with open(filepath, 'w', encoding='utf-8') as f:
+        f.write(svg_content)
+    
+    return filepath
+
+def build_multi_layer_svg(tree: dict, company_name: str, company_number: str) -> str:
+    """
+    Build a complete multi-layer ownership structure SVG from the ownership tree.
+    This recursively renders all layers of shareholders.
+    """
+    # Calculate tree dimensions
+    shareholders = tree.get("shareholders", [])
+    total_nodes = count_tree_nodes(tree)
+    
+    # SVG dimensions
+    width = 1200
+    height = max(600, 200 + total_nodes * 60)
+    
+    svg_lines = [
+        f'<?xml version="1.0" encoding="UTF-8"?>',
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
+        '  <!-- Background -->',
+        '  <rect width="100%" height="100%" fill="#f8f9fa"/>',
+        '  ',
+        '  <!-- Title -->',
+        f'  <text x="{width//2}" y="30" font-family="Arial, sans-serif" font-size="20" font-weight="bold" text-anchor="middle" fill="#1a1a1a">',
+        f'    Ownership Structure - Multi-Layer Tree',
+        '  </text>',
+        '  ',
+        '  <!-- Target Company (Center) -->',
+        f'  <rect x="{width//2 - 180}" y="60" width="360" height="80" rx="8" fill="#3b82f6" stroke="#2563eb" stroke-width="2"/>',
+        f'  <text x="{width//2}" y="90" font-family="Arial, sans-serif" font-size="15" font-weight="bold" text-anchor="middle" fill="white">',
+        f'    {company_name[:50]}',
+        '  </text>',
+        f'  <text x="{width//2}" y="115" font-family="Arial, sans-serif" font-size="13" text-anchor="middle" fill="white" opacity="0.9">',
+        f'    Company No: {company_number}',
+        '  </text>',
+        '  '
+    ]
+    
+    # Render shareholders recursively
+    if shareholders and len(shareholders) > 0:
+        y_offset = 180
+        svg_lines.extend(render_shareholders_layer(shareholders, width//2, y_offset, width, level=1))
+    else:
+        svg_lines.extend([
+            '  <!-- No Shareholders -->',
+            f'  <text x="{width//2}" y="200" font-family="Arial, sans-serif" font-size="14" text-anchor="middle" fill="#9ca3af">',
+            '    No shareholder data available',
+            '  </text>'
+        ])
+    
+    svg_lines.append('</svg>')
+    
+    return '\n'.join(svg_lines)
+
+def count_tree_nodes(tree: dict) -> int:
+    """Count total nodes in the ownership tree."""
+    count = len(tree.get("shareholders", []))
+    for shareholder in tree.get("shareholders", []):
+        if shareholder.get("shareholders") or shareholder.get("children"):
+            children = shareholder.get("shareholders") or shareholder.get("children") or []
+            count += count_tree_children(children)
+    return count
+
+def count_tree_children(children: list) -> int:
+    """Recursively count children nodes."""
+    count = len(children)
+    for child in children:
+        if child.get("shareholders") or child.get("children"):
+            grand_children = child.get("shareholders") or child.get("children") or []
+            count += count_tree_children(grand_children)
+    return count
+
+def render_shareholders_layer(shareholders: list, parent_x: int, y_start: int, width: int, level: int = 1) -> list:
+    """
+    Recursively render shareholders and their children in layers.
+    Returns SVG lines for this layer and all child layers.
+    """
+    if not shareholders or len(shareholders) == 0:
+        return []
+    
+    svg_lines = []
+    num_shareholders = len(shareholders)
+    box_width = 300
+    box_height = 70
+    horizontal_spacing = 350
+    vertical_spacing = 120
+    
+    # Color based on level
+    colors = [
+        ("#10b981", "#059669"),  # Green for level 1
+        ("#f59e0b", "#d97706"),  # Orange for level 2
+        ("#8b5cf6", "#7c3aed"),  # Purple for level 3
+        ("#ec4899", "#db2777"),  # Pink for level 4+
+    ]
+    color_idx = min(level - 1, len(colors) - 1)
+    fill_color, stroke_color = colors[color_idx]
+    
+    # Calculate positions for this layer
+    if num_shareholders == 1:
+        positions = [parent_x]
+    elif num_shareholders == 2:
+        positions = [parent_x - horizontal_spacing//2, parent_x + horizontal_spacing//2]
+    else:
+        # Distribute evenly
+        total_width = (num_shareholders - 1) * horizontal_spacing
+        start_x = parent_x - total_width // 2
+        positions = [start_x + i * horizontal_spacing for i in range(num_shareholders)]
+    
+    y_current = y_start
+    
+    for idx, shareholder in enumerate(shareholders[:20]):  # Limit to 20 per layer to keep SVG manageable
+        x_pos = positions[idx] if idx < len(positions) else parent_x
+        
+        name = shareholder.get("name", "Unknown")[:35]
+        percentage = shareholder.get("percentage") or shareholder.get("cumulative_percentage", 0)
+        shares = shareholder.get("shares_held", "")
+        is_company = shareholder.get("is_company", False)
+        
+        # Draw connection line from parent
+        svg_lines.extend([
+            f'  <!-- Connection line -->',
+            f'  <line x1="{parent_x}" y1="{y_start - 40}" x2="{x_pos}" y2="{y_current}" stroke="#94a3b8" stroke-width="2" stroke-dasharray="4,4"/>'
+        ])
+        
+        # Draw shareholder box
+        svg_lines.extend([
+            f'  <!-- Shareholder (Level {level}) -->',
+            f'  <rect x="{x_pos - box_width//2}" y="{y_current}" width="{box_width}" height="{box_height}" rx="6" fill="{fill_color}" stroke="{stroke_color}" stroke-width="2"/>',
+            f'  <text x="{x_pos}" y="{y_current + 25}" font-family="Arial, sans-serif" font-size="13" font-weight="600" text-anchor="middle" fill="white">',
+            f'    {name}',
+            '  </text>',
+            f'  <text x="{x_pos}" y="{y_current + 45}" font-family="Arial, sans-serif" font-size="11" text-anchor="middle" fill="white" opacity="0.9">',
+            f'    {percentage:.2f}% ownership',
+            '  </text>',
+            f'  <text x="{x_pos}" y="{y_current + 62}" font-family="Arial, sans-serif" font-size="10" text-anchor="middle" fill="white" opacity="0.8">',
+            f'    {"Company" if is_company else "Individual"}',
+            '  </text>',
+            '  '
+        ])
+        
+        # Recursively render children if they exist
+        children = shareholder.get("shareholders") or shareholder.get("children") or []
+        if children and len(children) > 0:
+            child_y = y_current + box_height + vertical_spacing
+            child_svg = render_shareholders_layer(children, x_pos, child_y, width, level + 1)
+            svg_lines.extend(child_svg)
+    
+    if num_shareholders > 20:
+        svg_lines.extend([
+            f'  <text x="{parent_x}" y="{y_current + 100}" font-family="Arial, sans-serif" font-size="12" text-anchor="middle" fill="#6b7280" font-style="italic">',
+            f'    ... and {num_shareholders - 20} more shareholders',
+            '  </text>'
+        ])
+    
+    return svg_lines
+
 def enrich_one(item_id: int, max_retries: int = 3):
     """Fetch CH bundle, write artifacts, and update status with automatic retry on failure.
     
@@ -1838,6 +2135,22 @@ def enrich_one(item_id: int, max_retries: int = 3):
             json.dump(bundle, f, ensure_ascii=False, indent=2)
         bundle_to_xlsx(bundle, xlsx_path)
 
+        # CRITICAL: Ensure ownership_tree always exists for SVG generation
+        # This must run BEFORE metrics calculation and SVG generation
+        if not bundle.get("ownership_tree"):
+            print(f"[enrich_one] ⚠️  No ownership tree found, creating basic tree for SVG generation...")
+            company_name = bundle.get("profile", {}).get("company_name", item.get("input_name", "Unknown Company"))
+            print(f"[enrich_one] Creating basic tree for: {company_name} ({company_number})")
+            bundle["ownership_tree"] = {
+                "company_number": company_number,
+                "company_name": company_name,
+                "shareholders": []
+            }
+            print(f"[enrich_one] ✅ Basic ownership tree created")
+        else:
+            shareholders_count = len(bundle["ownership_tree"].get("shareholders", []))
+            print(f"[enrich_one] ✅ Ownership tree exists with {shareholders_count} shareholders")
+
         # Calculate enrichment metrics
         enrichment_duration = time.time() - start_time
         
@@ -1882,12 +2195,27 @@ def enrich_one(item_id: int, max_retries: int = 3):
         shareholders_status = bundle.get("shareholders_status", "")
         
         # Serialize ownership tree for database storage (to survive Railway redeployments)
-        ownership_tree_json = json.dumps(bundle.get("ownership_tree"), ensure_ascii=False) if bundle.get("ownership_tree") else None
+        # Note: ownership_tree is guaranteed to exist now (created above if missing)
+        ownership_tree_json = json.dumps(bundle.get("ownership_tree"), ensure_ascii=False)
+
+        # Generate and save ownership structure SVG automatically after enrichment
+        svg_path = None
+        if bundle.get("ownership_tree"):
+            try:
+                svg_path = generate_and_save_ownership_svg(
+                    item_id=item_id,
+                    ownership_tree=bundle.get("ownership_tree"),
+                    item=item  # Pass item for company name/number
+                )
+                print(f"[enrich_one] ✅ Generated ownership SVG: {svg_path}")
+            except Exception as svg_error:
+                print(f"[enrich_one] ⚠️  Failed to generate SVG: {svg_error}")
+                # Don't fail enrichment if SVG generation fails
 
         with db() as conn:
             conn.execute(
-                "UPDATE items SET enrich_status='done', enrich_json_path=?, enrich_xlsx_path=?, shareholders_json=?, shareholders_status=?, ownership_tree_json=? WHERE id=?",
-                (json_path, xlsx_path, shareholders_json, shareholders_status, ownership_tree_json, item_id),
+                "UPDATE items SET enrich_status='done', enrich_json_path=?, enrich_xlsx_path=?, shareholders_json=?, shareholders_status=?, ownership_tree_json=?, svg_path=? WHERE id=?",
+                (json_path, xlsx_path, shareholders_json, shareholders_status, ownership_tree_json, svg_path, item_id),
             )
 
     except Exception as e:
@@ -2149,6 +2477,349 @@ def enqueue_enrich_charity(item_id: int):
     """
     enrichment_executor.submit(enrich_charity_one, item_id)
 
+# ============================================================================
+# AUTHENTICATION & AUTHORIZATION ENDPOINTS (Phase 1: Critical Security)
+# ============================================================================
+
+@app.post("/auth/login")
+@limiter.limit("5/minute")
+async def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends()):
+    """
+    Login endpoint with JWT token generation.
+    Rate limited to 10 attempts per minute to prevent brute force attacks.
+    """
+    # Log login attempt
+    log_audit_event(
+        action="login_attempt",
+        status="pending",
+        user_email=form_data.username,
+        ip_address=request.client.host,
+        user_agent=request.headers.get("user-agent")
+    )
+    
+    with db() as conn:
+        user = conn.execute(
+            "SELECT * FROM users WHERE email=? AND is_active=1",
+            (form_data.username.lower(),)
+        ).fetchone()
+        
+        if not user:
+            log_audit_event(
+                action="login_failed",
+                status="failed",
+                user_email=form_data.username,
+                details="User not found or inactive"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect email or password",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        
+        # Verify password (check if it's bcrypt or legacy SHA256)
+        password_valid = False
+        try:
+            # Try bcrypt first (secure)
+            from security import verify_password as verify_bcrypt
+            password_valid = verify_bcrypt(form_data.password, user["password_hash"])
+        except Exception:
+            # Fallback to legacy SHA256 (insecure - for migration only)
+            password_valid = _legacy_verify_password(form_data.password, user["password_hash"])
+            
+            if password_valid:
+                # Upgrade to bcrypt on successful login
+                from security import get_password_hash
+                new_hash = get_password_hash(form_data.password)
+                conn.execute(
+                    "UPDATE users SET password_hash=? WHERE id=?",
+                    (new_hash, user["id"])
+                )
+        
+        if not password_valid:
+            log_audit_event(
+                action="login_failed",
+                status="failed",
+                user_id=user["id"],
+                user_email=user["email"],
+                details="Invalid password"
+            )
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect email or password",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        
+        # Create access token
+        from datetime import timedelta
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(
+            data={"sub": str(user["id"])},
+            expires_delta=access_token_expires
+        )
+        
+        # Create refresh token
+        refresh_token = create_refresh_token(data={"sub": str(user["id"])})
+        
+        # Log successful login
+        log_audit_event(
+            action="login_success",
+            status="success",
+            user_id=user["id"],
+            user_email=user["email"],
+            ip_address=request.client.host
+        )
+        
+        return {
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_type": "bearer",
+            "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60
+        }
+
+@app.post("/auth/refresh")
+@limiter.limit("10/minute")
+async def refresh_token(request: Request, refresh_token: str = Form(...)):
+    """
+    Refresh access token using refresh token.
+    Rate limited to 10 requests per minute.
+    """
+    try:
+        from security import decode_token
+        payload = decode_token(refresh_token)
+        
+        if payload.get("type") != "refresh":
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token type"
+            )
+        
+        user_id = payload.get("sub")
+        if not user_id:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token"
+            )
+        
+        # Verify user still exists and is active
+        with db() as conn:
+            user = conn.execute(
+                "SELECT * FROM users WHERE id=? AND is_active=1",
+                (user_id,)
+            ).fetchone()
+            
+            if not user:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="User not found or inactive"
+                )
+        
+        # Create new access token
+        from datetime import timedelta
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        new_access_token = create_access_token(
+            data={"sub": user_id},
+            expires_delta=access_token_expires
+        )
+        
+        log_audit_event(
+            action="token_refresh",
+            status="success",
+            user_id=int(user_id)
+        )
+        
+        return {
+            "access_token": new_access_token,
+            "token_type": "bearer",
+            "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60
+        }
+        
+    except Exception as e:
+        log_audit_event(
+            action="token_refresh_failed",
+            status="failed",
+            details=str(e)
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid refresh token"
+        )
+
+@app.post("/auth/logout")
+@limiter.limit("20/minute")
+async def logout(
+    request: Request, 
+    token: str = Depends(oauth2_scheme),
+    current_user: dict = Depends(get_current_active_user)
+):
+    """
+    Logout endpoint with token blacklisting.
+    Revokes the current access token to prevent further use.
+    """
+    # Blacklist the current token
+    blacklist_token(
+        token=token,
+        user_id=current_user["id"],
+        reason="logout"
+    )
+    
+    # Log the logout event
+    log_audit_event(
+        action="logout",
+        status="success",
+        user_id=current_user["id"],
+        user_email=current_user["email"],
+        ip_address=request.client.host if request.client else None
+    )
+    
+    return {
+        "message": "Successfully logged out",
+        "detail": "Token has been revoked and can no longer be used"
+    }
+
+@app.post("/auth/cleanup-tokens")
+@limiter.limit("10/hour")
+async def cleanup_tokens(request: Request, current_user: dict = Depends(get_current_admin_user)):
+    """
+    Admin endpoint to cleanup expired tokens from blacklist.
+    Requires admin role.
+    """
+    deleted_count = cleanup_expired_tokens()
+    
+    log_audit_event(
+        action="token_cleanup",
+        status="success",
+        user_id=current_user["id"],
+        user_email=current_user["email"],
+        details=f"Cleaned up {deleted_count} expired tokens"
+    )
+    
+    return {
+        "message": f"Successfully cleaned up {deleted_count} expired tokens",
+        "deleted_count": deleted_count
+    }
+
+# ============================================================================
+# SECURITY MONITORING & AUDIT LOG ENDPOINTS (Phase 3)
+# ============================================================================
+
+@app.get("/api/admin/security/alerts")
+@limiter.limit("30/minute")
+async def get_security_alerts(
+    request: Request,
+    limit: int = Query(10, le=100),
+    current_user: dict = Depends(get_current_admin_user)
+):
+    """
+    Get recent security alerts (failed logins, unauthorized access, etc.).
+    Admin only.
+    """
+    alerts = SecurityMonitor.get_security_alerts(limit=limit)
+    return {
+        "alerts": alerts,
+        "count": len(alerts)
+    }
+
+@app.get("/api/admin/security/activity")
+@limiter.limit("30/minute")
+async def get_activity_summary(
+    request: Request,
+    hours: int = Query(24, ge=1, le=168),
+    current_user: dict = Depends(get_current_admin_user)
+):
+    """
+    Get security activity summary for the specified time period.
+    Admin only.
+    """
+    summary = SecurityMonitor.get_activity_summary(hours=hours)
+    return summary
+
+@app.get("/api/admin/security/check-user")
+@limiter.limit("30/minute")
+async def check_user_activity(
+    request: Request,
+    email: str = Query(...),
+    current_user: dict = Depends(get_current_admin_user)
+):
+    """
+    Check for suspicious activity for a specific user.
+    Admin only.
+    """
+    failed_logins = SecurityMonitor.check_failed_login_attempts(email)
+    return {
+        "email": email,
+        "failed_login_check": failed_logins
+    }
+
+@app.get("/api/admin/audit-logs")
+@limiter.limit("30/minute")
+async def get_audit_logs(
+    request: Request,
+    limit: int = Query(50, le=500),
+    offset: int = Query(0, ge=0),
+    action: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    user_id: Optional[int] = Query(None),
+    current_user: dict = Depends(get_current_admin_user)
+):
+    """
+    Get audit logs with filtering and pagination.
+    Admin only.
+    """
+    with db() as conn:
+        # Build query
+        query = "SELECT * FROM audit_logs WHERE 1=1"
+        params = []
+        
+        if action:
+            query += " AND action = ?"
+            params.append(action)
+        
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+        
+        if user_id:
+            query += " AND user_id = ?"
+            params.append(user_id)
+        
+        query += " ORDER BY timestamp DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        
+        logs = conn.execute(query, params).fetchall()
+        
+        # Get total count
+        count_query = "SELECT COUNT(*) as count FROM audit_logs WHERE 1=1"
+        count_params = []
+        if action:
+            count_query += " AND action = ?"
+            count_params.append(action)
+        if status:
+            count_query += " AND status = ?"
+            count_params.append(status)
+        if user_id:
+            count_query += " AND user_id = ?"
+            count_params.append(user_id)
+        
+        total = conn.execute(count_query, count_params).fetchone()["count"]
+        
+        return {
+            "logs": [dict(log) for log in logs],
+            "total": total,
+            "limit": limit,
+            "offset": offset
+        }
+
+@app.get("/auth/me")
+@limiter.limit("30/minute")
+async def get_current_user_info(request: Request, current_user: dict = Depends(get_current_active_user)):
+    """Get current authenticated user information."""
+    return {
+        "id": current_user["id"],
+        "email": current_user["email"],
+        "full_name": current_user.get("full_name"),
+        "is_active": current_user.get("is_active")
+    }
+
 # ---------------- Admin: Users CRUD (login-free) ----------------
 @app.get("/admin/users", response_class=HTMLResponse)
 def admin_users(request: Request):
@@ -2259,7 +2930,39 @@ def upload_page(request: Request):
     return templates.TemplateResponse("batchupload.html", {"request": request})
 
 @app.post("/batch-upload", response_class=HTMLResponse)
-async def batch_upload(request: Request, file: UploadFile = File(...)):
+@limiter.limit("10/hour")  # Rate limit file uploads
+async def batch_upload(
+    request: Request, 
+    file: UploadFile = File(...), 
+    current_user: Optional[dict] = Depends(get_current_user)  # Optional auth
+):
+    """
+    Batch upload endpoint with security validation.
+    Rate limited to 10 uploads per hour.
+    Authentication is optional for backward compatibility.
+    """
+    # Read file content
+    contents = await file.read()
+    
+    # Validate file upload
+    try:
+        validate_file_upload(file.filename, contents)
+    except HTTPException as e:
+        return templates.TemplateResponse(
+            "batchupload.html",
+            {"request": request, "error": e.detail}
+        )
+    
+    # Log upload attempt
+    if current_user:
+        log_audit_event(
+            action="file_upload",
+            status="pending",
+            user_id=current_user["id"],
+            user_email=current_user["email"],
+            details=f"Uploading {file.filename} ({len(contents)} bytes)"
+        )
+    
     suffix = os.path.splitext(file.filename)[-1].lower()
     if suffix not in [".csv", ".xlsx", ".xls"]:
         return templates.TemplateResponse(
@@ -2269,8 +2972,7 @@ async def batch_upload(request: Request, file: UploadFile = File(...)):
 
     # save upload to a temp file
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        contents = await file.read()
-        tmp.write(contents)
+        tmp.write(contents)  # contents already read above
         tmp_path = tmp.name
 
     out_dir = ensure_out_dir()
@@ -2664,7 +3366,8 @@ async def api_batch_upload(file: UploadFile = File(...)):
             pass
 
 @app.get("/api/batches")
-async def api_get_batches():
+@limiter.limit("100/minute")
+async def api_get_batches(request: Request):
     """Get all batch runs with statistics"""
     try:
         with db() as conn:
@@ -2710,7 +3413,8 @@ async def api_get_batches():
         )
 
 @app.get("/api/batch/{batch_id}/status")
-async def api_get_batch_status(batch_id: int):
+@limiter.limit("100/minute")
+async def api_get_batch_status(request: Request, batch_id: int):
     """Get status for a specific batch"""
     try:
         with db() as conn:
@@ -3215,7 +3919,8 @@ def build_screening_list(bundle: dict, shareholders: list, item: dict) -> dict:
     return screening
 
 @app.get("/api/batch/{batch_id}/items")
-async def api_get_batch_items(batch_id: int, limit: int = 100, offset: int = 0):
+@limiter.limit("60/minute")
+async def api_get_batch_items(request: Request, batch_id: int, limit: int = 100, offset: int = 0):
     """Get items for a specific batch"""
     try:
         with db() as conn:
@@ -3357,7 +4062,8 @@ def reset_item_enrichment(item_id: int):
         )
 
 @app.get("/api/item/{item_id}")
-async def api_get_item_details(item_id: int):
+@limiter.limit("100/minute")
+async def api_get_item_details(request: Request, item_id: int):
     """Get full details for a specific item including enriched data and shareholders"""
     try:
         with db() as conn:
@@ -3657,6 +4363,488 @@ async def export_screening_list_csv(item_id: int):
             content={"error": f"Failed to export screening list: {str(e)}"},
             status_code=500
         )
+
+# ==================== SVG STORAGE ====================
+
+@app.post("/api/item/{item_id}/save-svg")
+async def save_svg(item_id: int, request: Request):
+    """
+    Save ownership structure SVG to centralized storage.
+    
+    ⚠️ WARNING: Railway uses ephemeral file systems.
+    SVGs saved here will be LOST on deployment/restart.
+    For production, migrate to Cloudflare R2 or Railway Volumes.
+    
+    File naming: {company_name}_{company_number}_{timestamp}.svg
+    Storage location: svg_exports/
+    """
+    try:
+        # Get request body
+        body = await request.json()
+        svg_data = body.get("svg_data")
+        
+        if not svg_data:
+            return JSONResponse(
+                content={"error": "No SVG data provided"},
+                status_code=400
+            )
+        
+        # Get item details from database
+        with db() as conn:
+            item = conn.execute(
+                "SELECT id, input_name, entity_name, company_number FROM items WHERE id=?",
+                (item_id,)
+            ).fetchone()
+        
+        if not item:
+            return JSONResponse(
+                content={"error": f"Item {item_id} not found"},
+                status_code=404
+            )
+        
+        # Sanitize company name for filename
+        company_name = item["entity_name"] or item["input_name"] or "Unknown"
+        company_number = item["company_number"] or "NO_NUMBER"
+        
+        # Remove invalid filename characters
+        safe_name = re.sub(r'[<>:"/\\|?*]', '', company_name)
+        safe_name = re.sub(r'\s+', '_', safe_name)  # Replace spaces with underscores
+        safe_name = safe_name[:50]  # Limit length
+        
+        # Generate filename with timestamp and item_id
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{safe_name}_{company_number}_item{item_id}_{timestamp}.svg"
+        
+        # Ensure svg_exports directory exists
+        svg_dir = "svg_exports"
+        os.makedirs(svg_dir, exist_ok=True)
+        
+        # Save SVG file
+        filepath = os.path.join(svg_dir, filename)
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(svg_data)
+        
+        # Update database with SVG path
+        with db() as conn:
+            conn.execute(
+                "UPDATE items SET svg_path=? WHERE id=?",
+                (filepath, item_id)
+            )
+            conn.commit()
+        
+        # Get file size
+        file_size = os.path.getsize(filepath)
+        
+        return JSONResponse(
+            content={
+                "success": True,
+                "message": "SVG saved successfully",
+                "filename": filename,
+                "filepath": filepath,
+                "file_size_kb": round(file_size / 1024, 2),
+                "company_name": company_name,
+                "company_number": company_number,
+                "timestamp": timestamp,
+                "warning": "⚠️ This file will be lost on Railway redeploy. Migrate to R2 for persistence."
+            },
+            status_code=200
+        )
+        
+    except Exception as e:
+        import traceback
+        return JSONResponse(
+            content={
+                "error": f"Failed to save SVG: {str(e)}",
+                "traceback": traceback.format_exc()
+            },
+            status_code=500
+        )
+
+@app.get("/api/item/{item_id}/svg")
+@limiter.limit("60/minute")
+async def get_svg(request: Request, item_id: int):
+    """
+    Retrieve saved SVG file for an item.
+    Returns the SVG file if it exists, 404 otherwise.
+    """
+    try:
+        # Get SVG path from database
+        with db() as conn:
+            item = conn.execute(
+                "SELECT svg_path, entity_name, company_number FROM items WHERE id=?",
+                (item_id,)
+            ).fetchone()
+        
+        if not item:
+            return JSONResponse(
+                content={"error": f"Item {item_id} not found"},
+                status_code=404
+            )
+        
+        svg_path = item["svg_path"]
+        
+        if not svg_path or not os.path.exists(svg_path):
+            return JSONResponse(
+                content={
+                    "error": "SVG not found",
+                    "message": "No SVG has been saved for this item yet, or it was lost due to deployment."
+                },
+                status_code=404
+            )
+        
+        # Return SVG file
+        company_name = item["entity_name"] or "unknown"
+        company_number = item["company_number"] or "no_number"
+        safe_name = re.sub(r'[<>:"/\\|?*\s]+', '_', company_name)[:50]
+        
+        return FileResponse(
+            svg_path,
+            media_type="image/svg+xml",
+            filename=f"{safe_name}_{company_number}.svg"
+        )
+        
+    except Exception as e:
+        return JSONResponse(
+            content={"error": f"Failed to retrieve SVG: {str(e)}"},
+            status_code=500
+        )
+
+@app.get("/api/svgs/list")
+@limiter.limit("100/minute")
+async def list_svgs(request: Request):
+    """
+    List all saved SVG files in the svg_exports directory.
+    Useful for debugging and management.
+    """
+    try:
+        svg_dir = "svg_exports"
+        
+        if not os.path.exists(svg_dir):
+            return JSONResponse(
+                content={
+                    "files": [],
+                    "total_count": 0,
+                    "total_size_mb": 0,
+                    "message": "No SVGs saved yet"
+                }
+            )
+        
+        files = []
+        total_size = 0
+        
+        for filename in os.listdir(svg_dir):
+            if filename.endswith('.svg'):
+                filepath = os.path.join(svg_dir, filename)
+                file_size = os.path.getsize(filepath)
+                total_size += file_size
+                
+                files.append({
+                    "filename": filename,
+                    "size_kb": round(file_size / 1024, 2),
+                    "created": datetime.fromtimestamp(os.path.getctime(filepath)).isoformat()
+                })
+        
+        # Sort by creation time (newest first)
+        files.sort(key=lambda x: x["created"], reverse=True)
+        
+        return JSONResponse(
+            content={
+                "files": files,
+                "total_count": len(files),
+                "total_size_mb": round(total_size / (1024 * 1024), 2),
+                "storage_location": svg_dir,
+                "warning": "⚠️ These files will be lost on Railway redeploy"
+            }
+        )
+        
+    except Exception as e:
+        return JSONResponse(
+            content={"error": f"Failed to list SVGs: {str(e)}"},
+            status_code=500
+        )
+
+@app.get("/api/svgs/download-all")
+@limiter.limit("10/minute")  # Lower limit for large file downloads
+async def download_all_svgs(request: Request):
+    """
+    Download all saved SVGs as a ZIP file.
+    """
+    try:
+        svg_dir = "svg_exports"
+        
+        if not os.path.exists(svg_dir):
+            return JSONResponse(
+                content={"error": "No SVGs found"},
+                status_code=404
+            )
+        
+        svg_files = [f for f in os.listdir(svg_dir) if f.endswith('.svg')]
+        
+        if not svg_files:
+            return JSONResponse(
+                content={"error": "No SVG files to download"},
+                status_code=404
+            )
+        
+        # Create ZIP in memory
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            for filename in svg_files:
+                filepath = os.path.join(svg_dir, filename)
+                zip_file.write(filepath, filename)
+        
+        zip_buffer.seek(0)
+        
+        # Generate filename with timestamp
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        zip_filename = f"ownership_structures_{timestamp}.zip"
+        
+        return StreamingResponse(
+            zip_buffer,
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": f"attachment; filename={zip_filename}"
+            }
+        )
+        
+    except Exception as e:
+        return JSONResponse(
+            content={"error": f"Failed to create ZIP: {str(e)}"},
+            status_code=500
+        )
+
+@app.post("/api/batch/{batch_id}/svgs/generate")
+async def generate_batch_svgs(batch_id: int):
+    """
+    Generate simple placeholder SVGs for all enriched items in a batch.
+    This creates basic SVG files server-side so users don't need to view each entity.
+    """
+    try:
+        svg_dir = "svg_exports"
+        os.makedirs(svg_dir, exist_ok=True)
+        
+        # Get all enriched items in the batch
+        with db() as conn:
+            batch = conn.execute("SELECT * FROM runs WHERE id=?", (batch_id,)).fetchone()
+            if not batch:
+                return JSONResponse(
+                    content={"error": f"Batch {batch_id} not found"},
+                    status_code=404
+                )
+            
+            items = conn.execute(
+                """SELECT id, input_name, entity_name, company_number, ownership_tree_json, 
+                   shareholders_json FROM items WHERE run_id=? AND enrich_status='done'""",
+                (batch_id,)
+            ).fetchall()
+        
+        if not items:
+            return JSONResponse(
+                content={"error": f"No enriched items found in batch {batch_id}"},
+                status_code=404
+            )
+        
+        generated = []
+        skipped = []
+        
+        for item in items:
+            item_id = item[0]
+            entity_name = item[2] or item[1]  # entity_name or input_name
+            company_number = item[3] or "UNKNOWN"
+            ownership_tree = item[4]
+            shareholders_json = item[5]
+            
+            # Parse shareholders data
+            shareholders = []
+            if shareholders_json:
+                try:
+                    shareholders_data = json.loads(shareholders_json)
+                    if isinstance(shareholders_data, dict) and 'items' in shareholders_data:
+                        shareholders = shareholders_data['items'][:10]  # Limit to top 10
+                except:
+                    pass
+            
+            # Generate simple SVG
+            svg_content = generate_simple_ownership_svg(entity_name, company_number, shareholders)
+            
+            # Save SVG
+            safe_name = re.sub(r'[^\w\s-]', '', entity_name).strip().replace(' ', '_')[:50]
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            filename = f"{safe_name}_{company_number}_item{item_id}_{timestamp}.svg"
+            filepath = os.path.join(svg_dir, filename)
+            
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write(svg_content)
+            
+            # Update database
+            with db() as conn:
+                conn.execute("UPDATE items SET svg_path=? WHERE id=?", (filepath, item_id))
+            
+            generated.append({
+                "item_id": item_id,
+                "filename": filename,
+                "company_name": entity_name,
+                "company_number": company_number
+            })
+        
+        return JSONResponse(
+            content={
+                "success": True,
+                "batch_id": batch_id,
+                "generated": len(generated),
+                "skipped": len(skipped),
+                "files": generated,
+                "message": f"Generated {len(generated)} SVG files"
+            }
+        )
+        
+    except Exception as e:
+        return JSONResponse(
+            content={"error": f"Failed to generate SVGs: {str(e)}"},
+            status_code=500
+        )
+
+def generate_simple_ownership_svg(company_name: str, company_number: str, shareholders: list) -> str:
+    """
+    Generate a simple ownership structure SVG showing company and top shareholders.
+    """
+    width = 800
+    height = max(400, 150 + len(shareholders) * 80)
+    
+    svg_lines = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
+        '  <!-- Background -->',
+        '  <rect width="100%" height="100%" fill="#f8f9fa"/>',
+        '  ',
+        '  <!-- Title -->',
+        f'  <text x="{width//2}" y="30" font-family="Arial, sans-serif" font-size="18" font-weight="bold" text-anchor="middle" fill="#1a1a1a">',
+        f'    Ownership Structure',
+        '  </text>',
+        '  ',
+        '  <!-- Target Company -->',
+        f'  <rect x="{width//2 - 150}" y="60" width="300" height="70" rx="8" fill="#3b82f6" stroke="#2563eb" stroke-width="2"/>',
+        f'  <text x="{width//2}" y="90" font-family="Arial, sans-serif" font-size="14" font-weight="bold" text-anchor="middle" fill="white">',
+        f'    {company_name[:40]}',
+        '  </text>',
+        f'  <text x="{width//2}" y="110" font-family="Arial, sans-serif" font-size="12" text-anchor="middle" fill="white" opacity="0.9">',
+        f'    Company No: {company_number}',
+        '  </text>',
+        '  '
+    ]
+    
+    if shareholders and len(shareholders) > 0:
+        svg_lines.extend([
+            '  <!-- Shareholders -->',
+            f'  <text x="{width//2}" y="160" font-family="Arial, sans-serif" font-size="14" font-weight="600" text-anchor="middle" fill="#4b5563">',
+            f'    Shareholders / PSCs ({len(shareholders)} shown)',
+            '  </text>',
+            '  '
+        ])
+        
+        y_start = 190
+        for i, sh in enumerate(shareholders[:10]):
+            y = y_start + (i * 80)
+            name = sh.get('name', 'Unknown')[:35]
+            natures = sh.get('natures_of_control', [])
+            nature_text = natures[0][:40] if natures else 'No control info'
+            
+            # Draw shareholder box
+            svg_lines.extend([
+                f'  <!-- Shareholder {i+1} -->',
+                f'  <line x1="{width//2}" y1="130" x2="{width//2}" y2="{y}" stroke="#94a3b8" stroke-width="2" stroke-dasharray="4,4"/>',
+                f'  <rect x="{width//2 - 180}" y="{y}" width="360" height="60" rx="6" fill="white" stroke="#cbd5e1" stroke-width="1.5"/>',
+                f'  <text x="{width//2 - 170}" y="{y + 25}" font-family="Arial, sans-serif" font-size="13" font-weight="600" fill="#1e293b">',
+                f'    {name}',
+                '  </text>',
+                f'  <text x="{width//2 - 170}" y="{y + 45}" font-family="Arial, sans-serif" font-size="11" fill="#64748b">',
+                f'    {nature_text}',
+                '  </text>',
+                '  '
+            ])
+    else:
+        svg_lines.extend([
+            '  <!-- No Shareholders -->',
+            f'  <text x="{width//2}" y="180" font-family="Arial, sans-serif" font-size="13" text-anchor="middle" fill="#9ca3af">',
+            '    No shareholder data available',
+            '  </text>'
+        ])
+    
+    svg_lines.append('</svg>')
+    
+    return '\n'.join(svg_lines)
+
+@app.get("/api/batch/{batch_id}/svgs/download")
+async def download_batch_svgs(batch_id: int):
+    """
+    Download all SVGs for a specific batch as a ZIP file.
+    """
+    try:
+        svg_dir = "svg_exports"
+        
+        # Get all items in the batch
+        with db() as conn:
+            batch = conn.execute("SELECT * FROM runs WHERE id=?", (batch_id,)).fetchone()
+            if not batch:
+                return JSONResponse(
+                    content={"error": f"Batch {batch_id} not found"},
+                    status_code=404
+                )
+            
+            items = conn.execute(
+                "SELECT id, input_name, company_number, svg_path FROM items WHERE run_id=?",
+                (batch_id,)
+            ).fetchall()
+        
+        if not items:
+            return JSONResponse(
+                content={"error": f"No items found in batch {batch_id}"},
+                status_code=404
+            )
+        
+        # Collect SVG files for this batch
+        svg_files = []
+        for item in items:
+            svg_path = item[3]  # svg_path column
+            if svg_path and os.path.exists(svg_path):
+                svg_files.append({
+                    "path": svg_path,
+                    "filename": os.path.basename(svg_path)
+                })
+        
+        if not svg_files:
+            return JSONResponse(
+                content={"error": f"No SVGs found for batch {batch_id}"},
+                status_code=404
+            )
+        
+        # Create ZIP in memory
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            for svg_file in svg_files:
+                zip_file.write(svg_file["path"], svg_file["filename"])
+        
+        zip_buffer.seek(0)
+        
+        # Generate filename
+        batch_filename = batch[1] if len(batch) > 1 else f"batch_{batch_id}"
+        batch_filename = batch_filename.replace('.xlsx', '').replace('.csv', '')
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        zip_filename = f"{batch_filename}_ownership_structures_{timestamp}.zip"
+        
+        return StreamingResponse(
+            zip_buffer,
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": f"attachment; filename={zip_filename}"
+            }
+        )
+        
+    except Exception as e:
+        return JSONResponse(
+            content={"error": f"Failed to create ZIP: {str(e)}"},
+            status_code=500
+        )
+
 
 @app.get("/auto/{item_id}/compare", response_class=HTMLResponse)
 def auto_compare(request: Request, item_id: int):
@@ -5045,29 +6233,41 @@ def download(path: str):
     return FileResponse(abs_path, filename=os.path.basename(abs_path))
 
 @app.post("/api/admin/clear-database")
-def clear_database(request: Request):
+@limiter.limit("3/hour")  # Strict rate limit for destructive operation
+async def clear_database(request: Request, current_user: dict = Depends(get_current_admin_user)):
     """
     Admin endpoint to clear all data from the DEV database.
-    Requires X-Admin-Key header for security.
+    Requires JWT authentication with admin role.
+    Rate limited to 3 requests per hour.
     DEV Environment Only.
     
-    Usage:
+    Usage with JWT:
     curl -X POST https://your-backend.railway.app/api/admin/clear-database \
-      -H "X-Admin-Key: clear-dev-db-2024"
+      -H "Authorization: Bearer YOUR_JWT_TOKEN"
     """
     # SAFETY: Only allow in DEV environment
     environment = os.getenv("ENVIRONMENT", "development")
     if environment == "production":
+        log_audit_event(
+            action="clear_database_blocked",
+            status="blocked",
+            user_id=current_user["id"],
+            details="Attempted in production environment"
+        )
         raise HTTPException(status_code=403, detail="This endpoint is only available in DEV environment")
     
-    # Check admin key
-    admin_key = request.headers.get("X-Admin-Key", "")
-    expected_key = os.getenv("ADMIN_KEY", "clear-dev-db-2024")
-    
-    if admin_key != expected_key:
-        raise HTTPException(status_code=403, detail="Invalid admin key")
+    # Admin authentication already verified by get_current_admin_user dependency
     
     try:
+        # Log the operation before execution
+        log_audit_event(
+            action="clear_database_start",
+            status="pending",
+            user_id=current_user["id"],
+            user_email=current_user["email"],
+            ip_address=request.client.host
+        )
+        
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         
@@ -5087,16 +6287,36 @@ def clear_database(request: Request):
         conn.commit()
         conn.close()
         
+        # Log successful operation
+        log_audit_event(
+            action="clear_database_success",
+            status="success",
+            user_id=current_user["id"],
+            user_email=current_user["email"],
+            details=f"Deleted {items_count} items and {batches_count} batches"
+        )
+        
         return {
             "success": True,
             "message": "Database cleared successfully",
             "items_deleted": items_count,
             "batches_deleted": batches_count,
             "database": DB_PATH,
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now().isoformat(),
+            "cleared_by": current_user["email"]
         }
     except Exception as e:
         import traceback
+        
+        # Log failed operation
+        log_audit_event(
+            action="clear_database_failed",
+            status="failed",
+            user_id=current_user["id"],
+            user_email=current_user["email"],
+            details=str(e)
+        )
+        
         return {
             "success": False,
             "error": str(e),
