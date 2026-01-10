@@ -4919,8 +4919,9 @@ async def download_all_svgs(request: Request):
 @app.post("/api/batch/{batch_id}/svgs/generate")
 async def generate_batch_svgs(batch_id: int):
     """
-    Generate simple placeholder SVGs for all enriched items in a batch.
-    This creates basic SVG files server-side so users don't need to view each entity.
+    Generate ENHANCED ownership structure SVGs for all enriched items in a batch.
+    Uses the same high-quality SVG generation as the enrichment process (flags, icons, shadows, etc).
+    This creates SVG files server-side so users don't need to view each entity.
     """
     try:
         svg_dir = "svg_exports"
@@ -4954,21 +4955,31 @@ async def generate_batch_svgs(batch_id: int):
             item_id = item[0]
             entity_name = item[2] or item[1]  # entity_name or input_name
             company_number = item[3] or "UNKNOWN"
-            ownership_tree = item[4]
+            ownership_tree_json = item[4]
             shareholders_json = item[5]
             
-            # Parse shareholders data
-            shareholders = []
-            if shareholders_json:
-                try:
-                    shareholders_data = json.loads(shareholders_json)
-                    if isinstance(shareholders_data, dict) and 'items' in shareholders_data:
-                        shareholders = shareholders_data['items'][:10]  # Limit to top 10
-                except:
-                    pass
+            # Skip if no ownership tree
+            if not ownership_tree_json:
+                skipped.append({
+                    "item_id": item_id,
+                    "company_name": entity_name,
+                    "reason": "No ownership tree available"
+                })
+                continue
             
-            # Generate simple SVG
-            svg_content = generate_simple_ownership_svg(entity_name, company_number, shareholders)
+            # Parse ownership tree
+            try:
+                ownership_tree = json.loads(ownership_tree_json)
+            except:
+                skipped.append({
+                    "item_id": item_id,
+                    "company_name": entity_name,
+                    "reason": "Failed to parse ownership tree JSON"
+                })
+                continue
+            
+            # Generate ENHANCED SVG (same as enrichment process)
+            svg_content = build_enhanced_ownership_svg(ownership_tree, entity_name, company_number)
             
             # Save SVG
             safe_name = re.sub(r'[^\w\s-]', '', entity_name).strip().replace(' ', '_')[:50]
@@ -4997,7 +5008,8 @@ async def generate_batch_svgs(batch_id: int):
                 "generated": len(generated),
                 "skipped": len(skipped),
                 "files": generated,
-                "message": f"Generated {len(generated)} SVG files"
+                "skipped_items": skipped,
+                "message": f"Generated {len(generated)} enhanced SVG files with flags, icons, and ownership trees"
             }
         )
         
