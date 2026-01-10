@@ -2139,7 +2139,13 @@ def enrich_one(item_id: int, max_retries: int = 3):
         # This must run BEFORE metrics calculation and SVG generation
         if not bundle.get("ownership_tree"):
             print(f"[enrich_one] ⚠️  No ownership tree found, creating basic tree for SVG generation...")
-            company_name = bundle.get("profile", {}).get("company_name", item.get("input_name", "Unknown Company"))
+            # Get company name from bundle or use a fallback
+            company_name = bundle.get("profile", {}).get("company_name")
+            if not company_name:
+                # Fallback: try to get from database row if available
+                with db() as conn:
+                    row = conn.execute("SELECT input_name FROM items WHERE id=?", (item_id,)).fetchone()
+                    company_name = row["input_name"] if row else "Unknown Company"
             print(f"[enrich_one] Creating basic tree for: {company_name} ({company_number})")
             bundle["ownership_tree"] = {
                 "company_number": company_number,
