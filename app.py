@@ -1737,7 +1737,7 @@ def build_enhanced_ownership_svg(ownership_tree: dict, company_name: str, compan
             'country': node.get('country', node.get('country_of_residence', '')),
             'percentage': node.get('percentage', 0),
             'percentageBand': node.get('percentage_band', ''),
-            'shares': node.get('shares', 0),
+            'shares': node.get('shares', node.get('shares_held', 0)),
             'depth': depth,
             'x': x,
             'y': y
@@ -1769,9 +1769,17 @@ def build_enhanced_ownership_svg(ownership_tree: dict, company_name: str, compan
                 tree_to_nodes(child, node_id, depth + 1, child_x, child_y)
     
     # Build nodes and links from tree
+    print(f"[build_enhanced_ownership_svg] DEBUG: ownership_tree type: {type(ownership_tree)}")
+    print(f"[build_enhanced_ownership_svg] DEBUG: ownership_tree keys: {ownership_tree.keys() if isinstance(ownership_tree, dict) else 'NOT A DICT'}")
+    print(f"[build_enhanced_ownership_svg] DEBUG: Root company_name: {ownership_tree.get('company_name', 'MISSING')}")
+    print(f"[build_enhanced_ownership_svg] DEBUG: Root shareholders count: {len(ownership_tree.get('shareholders', []))}")
+    
     tree_to_nodes(ownership_tree)
     
+    print(f"[build_enhanced_ownership_svg] DEBUG: Generated {len(nodes)} nodes and {len(links)} links")
+    
     if len(nodes) == 0:
+        print(f"[build_enhanced_ownership_svg] ⚠️ WARNING: No nodes generated! Returning fallback SVG")
         return '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="200"><text x="200" y="100" text-anchor="middle">No ownership data</text></svg>'
     
     # Calculate SVG dimensions
