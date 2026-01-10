@@ -2624,7 +2624,7 @@ def enrich_one(item_id: int, max_retries: int = 3):
 
         # CRITICAL: Ensure ownership_tree always exists for SVG generation
         # This must run BEFORE metrics calculation and SVG generation
-        if not bundle.get("ownership_tree"):
+        if bundle.get("ownership_tree") is None:
             print(f"[enrich_one] ⚠️  No ownership tree found, creating basic tree for SVG generation...")
             # Get company name from bundle or use a fallback
             company_name = bundle.get("profile", {}).get("company_name")
@@ -2691,7 +2691,7 @@ def enrich_one(item_id: int, max_retries: int = 3):
         # Note: ownership_tree is guaranteed to exist now (created above if missing)
         print(f"[enrich_one] DEBUG: bundle.get('ownership_tree') exists: {bundle.get('ownership_tree') is not None}")
         print(f"[enrich_one] DEBUG: ownership_tree type: {type(bundle.get('ownership_tree'))}")
-        if bundle.get("ownership_tree"):
+        if bundle.get("ownership_tree") is not None:
             print(f"[enrich_one] DEBUG: ownership_tree keys: {bundle.get('ownership_tree').keys()}")
             print(f"[enrich_one] DEBUG: ownership_tree shareholders count: {len(bundle.get('ownership_tree', {}).get('shareholders', []))}")
         
@@ -4387,7 +4387,7 @@ def build_screening_list(bundle: dict, shareholders: list, item: dict) -> dict:
                 extract_ownership_chain(sh, depth + 1)
     
     # Start extraction from root
-    if ownership_tree:
+    if ownership_tree is not None:
         extract_ownership_chain(ownership_tree)
     
     # 4. TRUSTS - Detect trust-related entities
@@ -4657,7 +4657,7 @@ async def api_get_item_details(request: Request, item_id: int):
             print(f"[api_get_item_details] Failed to read ownership_tree_json (column may not exist yet): {e}")
         
         # Fallback to bundle if database doesn't have it
-        if not ownership_tree and bundle:
+        if ownership_tree is None and bundle:
             ownership_tree = bundle.get("ownership_tree")
         
         # Build KYC/AML screening list
@@ -4666,7 +4666,7 @@ async def api_get_item_details(request: Request, item_id: int):
         screening_list = build_screening_list(bundle, shareholders, item_dict)
         
         # 🐛 DEBUG: Log ownership tree structure to investigate Issue #3 (missing shares for individuals)
-        if ownership_tree and ownership_tree.get("shareholders"):
+        if ownership_tree is not None and ownership_tree.get("shareholders"):
             print(f"[DEBUG Issue #3] Item {item_id} ownership tree structure:")
             for idx, shareholder in enumerate(ownership_tree.get("shareholders", []), 1):
                 sh_name = shareholder.get("name", "N/A")
