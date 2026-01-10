@@ -1621,6 +1621,278 @@ def bundle_to_xlsx(bundle: dict, xlsx_path: str):
 # ---------------- Enrichment worker ----------------
 
 # ---------------- Companies House enrichment ----------------
+def get_country_flag(country: str) -> str:
+    """Map country names to flag emojis - matches frontend logic"""
+    if not country or not isinstance(country, str):
+        return ''
+    
+    country_upper = country.upper().strip()
+    flag_map = {
+        'ENGLAND': '🏴󠁧󠁢󠁥󠁮󠁧󠁿',
+        'SCOTLAND': '🏴󠁧󠁢󠁳󠁣󠁴󠁿',
+        'WALES': '🏴󠁧󠁢󠁷󠁬󠁳󠁿',
+        'NORTHERN IRELAND': '🇬🇧',
+        'UNITED KINGDOM': '🇬🇧',
+        'UK': '🇬🇧',
+        'EUROPEAN UNION': '🇪🇺',
+        'EU': '🇪🇺',
+        'GERMANY': '🇩🇪',
+        'FRANCE': '🇫🇷',
+        'SPAIN': '🇪🇸',
+        'ITALY': '🇮🇹',
+        'NETHERLANDS': '🇳🇱',
+        'BELGIUM': '🇧🇪',
+        'IRELAND': '🇮🇪',
+        'LUXEMBOURG': '🇱🇺',
+        'SWITZERLAND': '🇨🇭',
+        'AUSTRIA': '🇦🇹',
+        'DENMARK': '🇩🇰',
+        'SWEDEN': '🇸🇪',
+        'NORWAY': '🇳🇴',
+        'FINLAND': '🇫🇮',
+        'POLAND': '🇵🇱',
+        'CZECH REPUBLIC': '🇨🇿',
+        'PORTUGAL': '🇵🇹',
+        'GREECE': '🇬🇷',
+        'USA': '🇺🇸',
+        'UNITED STATES': '🇺🇸',
+        'CANADA': '🇨🇦',
+        'AUSTRALIA': '🇦🇺',
+        'NEW ZEALAND': '🇳🇿',
+        'JAPAN': '🇯🇵',
+        'CHINA': '🇨🇳',
+        'INDIA': '🇮🇳',
+        'SINGAPORE': '🇸🇬',
+        'HONG KONG': '🇭🇰',
+        'SOUTH KOREA': '🇰🇷',
+        'BRAZIL': '🇧🇷',
+        'MEXICO': '🇲🇽',
+        'ARGENTINA': '🇦🇷',
+        'SOUTH AFRICA': '🇿🇦',
+        'RUSSIA': '🇷🇺',
+        'TURKEY': '🇹🇷',
+        'ISRAEL': '🇮🇱',
+        'UAE': '🇦🇪',
+        'SAUDI ARABIA': '🇸🇦'
+    }
+    return flag_map.get(country_upper, '🌍')
+
+def escape_xml(text: str) -> str:
+    """Escape XML special characters"""
+    if not text:
+        return ''
+    text = str(text)
+    return (text.replace('&', '&amp;')
+                .replace('<', '&lt;')
+                .replace('>', '&gt;')
+                .replace('"', '&quot;')
+                .replace("'", '&apos;'))
+
+def wrap_text(text: str, max_chars: int = 20) -> list:
+    """Wrap text to max characters per line, max 2 lines"""
+    words = str(text).split()
+    lines = []
+    current_line = ''
+    
+    for word in words:
+        test_line = f"{current_line} {word}".strip() if current_line else word
+        if len(test_line) <= max_chars:
+            current_line = test_line
+        else:
+            if current_line:
+                lines.append(current_line)
+            current_line = word
+    
+    if current_line:
+        lines.append(current_line)
+    
+    # Limit to 2 lines
+    if len(lines) > 2:
+        lines[1] = lines[1][:max_chars-3] + '...'
+        lines = lines[:2]
+    
+    return lines
+
+def build_enhanced_ownership_svg(ownership_tree: dict, company_name: str, company_number: str) -> str:
+    """
+    Build enhanced SVG matching frontend quality with flags, icons, shadows, and proper layout.
+    This matches the frontend's createOwnershipSVG() function.
+    """
+    # Convert tree to nodes and links format (like frontend)
+    nodes = []
+    links = []
+    
+    def tree_to_nodes(node, parent_id=None, depth=0, x=600, y=50):
+        """Recursively convert tree structure to nodes and links"""
+        node_id = len(nodes)
+        
+        # Create node
+        nodes.append({
+            'id': node_id,
+            'name': node.get('company_name', node.get('name', 'Unknown')),
+            'companyNumber': node.get('company_number', node.get('company_num', '')),
+            'isCompany': node.get('is_company', True),
+            'country': node.get('country', node.get('country_of_residence', '')),
+            'percentage': node.get('percentage', 0),
+            'percentageBand': node.get('percentage_band', ''),
+            'shares': node.get('shares', 0),
+            'depth': depth,
+            'x': x,
+            'y': y
+        })
+        
+        # Create link from parent
+        if parent_id is not None:
+            links.append({
+                'source': parent_id,
+                'target': node_id
+            })
+        
+        # Process children/shareholders
+        children = node.get('shareholders', node.get('children', []))
+        if children:
+            num_children = len(children)
+            spacing = 350  # Horizontal spacing between siblings
+            
+            # Calculate starting X position to center children under parent
+            if num_children == 1:
+                start_x = x
+            else:
+                total_width = (num_children - 1) * spacing
+                start_x = x - total_width / 2
+            
+            for i, child in enumerate(children):
+                child_x = start_x + i * spacing
+                child_y = y + 120  # Vertical spacing between levels
+                tree_to_nodes(child, node_id, depth + 1, child_x, child_y)
+    
+    # Build nodes and links from tree
+    tree_to_nodes(ownership_tree)
+    
+    if len(nodes) == 0:
+        return '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="200"><text x="200" y="100" text-anchor="middle">No ownership data</text></svg>'
+    
+    # Calculate SVG dimensions
+    min_x = min(n['x'] for n in nodes) - 100
+    max_x = max(n['x'] for n in nodes) + 100
+    max_y = max(n['y'] for n in nodes) + 100
+    
+    # Shift nodes if needed
+    x_offset = 50 - min_x if min_x < 50 else 0
+    for node in nodes:
+        node['x'] += x_offset
+    
+    width = max_x - min_x + x_offset + 100
+    height = max(400, max_y + 150)
+    
+    # Depth colors matching frontend
+    depth_colors = [
+        '#1e40af',  # blue-800 (root)
+        '#3b82f6',  # blue-500
+        '#059669',  # green-600
+        '#10b981',  # green-500
+        '#f59e0b',  # yellow-500
+        '#f97316',  # orange-500
+        '#ef4444',  # red-500
+        '#dc2626'   # red-600
+    ]
+    
+    # Build SVG
+    svg_parts = []
+    svg_parts.append(f'<?xml version="1.0" encoding="UTF-8"?>')
+    svg_parts.append(f'<svg width="{width}" height="{height}" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" style="border: 1px solid #e5e7eb; border-radius: 8px; background: #ffffff;">')
+    
+    # Definitions (markers and filters)
+    svg_parts.append('<defs>')
+    svg_parts.append('  <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">')
+    svg_parts.append('    <polygon points="0 0, 10 3.5, 0 7" fill="#9ca3af" />')
+    svg_parts.append('  </marker>')
+    svg_parts.append('  <filter id="shadow" x="-50%" y="-50%" width="200%" height="200%">')
+    svg_parts.append('    <feGaussianBlur in="SourceAlpha" stdDeviation="3"/>')
+    svg_parts.append('    <feOffset dx="0" dy="2" result="offsetblur"/>')
+    svg_parts.append('    <feComponentTransfer>')
+    svg_parts.append('      <feFuncA type="linear" slope="0.2"/>')
+    svg_parts.append('    </feComponentTransfer>')
+    svg_parts.append('    <feMerge>')
+    svg_parts.append('      <feMergeNode/>')
+    svg_parts.append('      <feMergeNode in="SourceGraphic"/>')
+    svg_parts.append('    </feMerge>')
+    svg_parts.append('  </filter>')
+    svg_parts.append('</defs>')
+    
+    svg_parts.append('<g transform="scale(1)">')
+    
+    # Draw links first (behind nodes)
+    for link in links:
+        source = nodes[link['source']]
+        target = nodes[link['target']]
+        
+        source_x = source['x']
+        source_y = source['y'] + 40  # Bottom of source box
+        target_x = target['x']
+        target_y = target['y'] - 10  # Top of target box
+        
+        # Draw curved line
+        mid_y = (source_y + target_y) / 2
+        path = f'M {source_x} {source_y} C {source_x} {mid_y}, {target_x} {mid_y}, {target_x} {target_y}'
+        svg_parts.append(f'  <path d="{path}" stroke="#9ca3af" stroke-width="2" fill="none" marker-end="url(#arrowhead)"/>')
+        
+        # Add percentage label on link
+        if target['percentageBand'] or target['percentage'] > 0:
+            label_x = (source_x + target_x) / 2
+            label_y = (source_y + target_y) / 2 - 5
+            label = target['percentageBand'] if target['percentageBand'] else f"{target['percentage']:.1f}%"
+            svg_parts.append(f'  <text x="{label_x}" y="{label_y}" text-anchor="middle" font-size="10" fill="#6b7280" font-weight="600">{escape_xml(label)}</text>')
+    
+    # Draw nodes
+    for node in nodes:
+        color = depth_colors[min(node['depth'], len(depth_colors) - 1)]
+        fill_color = color if node['depth'] == 0 else '#ffffff'
+        stroke_color = color
+        text_color = '#ffffff' if node['depth'] == 0 else '#1f2937'
+        
+        # Node box
+        box_x = node['x'] - 100
+        box_y = node['y'] - 35
+        svg_parts.append(f'  <rect x="{box_x}" y="{box_y}" width="200" height="70" rx="8" ry="8" fill="{fill_color}" stroke="{stroke_color}" stroke-width="2" filter="url(#shadow)"/>')
+        
+        # Icon and flag
+        icon = '🏢' if node['isCompany'] else '👤'
+        flag = get_country_flag(node['country'])
+        
+        svg_parts.append(f'  <text x="{node["x"] - 90}" y="{node["y"] - 10}" font-size="16">{icon}</text>')
+        
+        if flag and node['country']:
+            svg_parts.append(f'  <text x="{node["x"] + 80}" y="{node["y"] - 10}" font-size="16">{flag}</text>')
+        elif node['isCompany'] and not node['companyNumber']:
+            svg_parts.append(f'  <text x="{node["x"] + 80}" y="{node["y"] - 10}" font-size="16">❓</text>')
+        
+        # Company name with wrapping
+        lines = wrap_text(node['name'], 20)
+        start_y = node['y'] - 15 + (5 if len(lines) == 1 else 0)
+        
+        svg_parts.append(f'  <text x="{node["x"] - 65}" y="{start_y}" font-size="11" font-weight="600" fill="{text_color}">')
+        for idx, line in enumerate(lines):
+            dy = 0 if idx == 0 else 12
+            svg_parts.append(f'    <tspan x="{node["x"] - 65}" dy="{dy}">{escape_xml(line)}</tspan>')
+        svg_parts.append('  </text>')
+        
+        # Company number
+        if node['companyNumber']:
+            num_color = '#e5e7eb' if node['depth'] == 0 else '#6b7280'
+            svg_parts.append(f'  <text x="{node["x"] - 65}" y="{node["y"] + 5}" font-size="10" fill="{num_color}">{escape_xml(node["companyNumber"])}</text>')
+        
+        # Shares info
+        if node['shares'] > 0:
+            shares_text = f"{node['shares']:,} shares"
+            shares_color = '#d1d5db' if node['depth'] == 0 else '#9ca3af'
+            svg_parts.append(f'  <text x="{node["x"] - 65}" y="{node["y"] + 20}" font-size="9" fill="{shares_color}">{escape_xml(shares_text)}</text>')
+    
+    svg_parts.append('</g>')
+    svg_parts.append('</svg>')
+    
+    return '\n'.join(svg_parts)
+
 def generate_and_save_ownership_svg(item_id: int, ownership_tree: dict, item: dict) -> str:
     """
     Generate a complete multi-layer ownership structure SVG from the ownership tree
@@ -1639,8 +1911,8 @@ def generate_and_save_ownership_svg(item_id: int, ownership_tree: dict, item: di
     company_name = ownership_tree.get("company_name", item.get("input_name", "Unknown"))
     company_number = ownership_tree.get("company_number", item.get("company_number", "UNKNOWN"))
     
-    # Build the SVG
-    svg_content = build_multi_layer_svg(ownership_tree, company_name, company_number)
+    # Build the ENHANCED SVG (matching frontend quality)
+    svg_content = build_enhanced_ownership_svg(ownership_tree, company_name, company_number)
     
     # Generate filename
     safe_name = re.sub(r'[^\w\s-]', '', company_name).strip().replace(' ', '_')[:50]
