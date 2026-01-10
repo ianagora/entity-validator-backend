@@ -130,7 +130,9 @@ app.add_middleware(
 # Serve /static/* from the local "static" folder
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
-DB_PATH = "entity_workflow.db"
+# Use persistent storage on Railway volume (falls back to local for development)
+DB_PATH = os.getenv("DB_PATH", "/data/entity_workflow.db") if os.path.exists("/data") else "entity_workflow.db"
+SVG_EXPORTS_DIR = os.getenv("SVG_EXPORTS_DIR", "/data/svg_exports") if os.path.exists("/data") else "svg_exports"
 RESULTS_BASE = "results"
 
 # CH link helpers
@@ -1904,7 +1906,7 @@ def generate_and_save_ownership_svg(item_id: int, ownership_tree: dict, item: di
     from datetime import datetime
     
     # Ensure svg_exports directory exists
-    svg_dir = "svg_exports"
+    svg_dir = SVG_EXPORTS_DIR
     os.makedirs(svg_dir, exist_ok=True)
     
     # Get company details
@@ -4719,7 +4721,7 @@ async def save_svg(item_id: int, request: Request):
         filename = f"{safe_name}_{company_number}_item{item_id}_{timestamp}.svg"
         
         # Ensure svg_exports directory exists
-        svg_dir = "svg_exports"
+        svg_dir = SVG_EXPORTS_DIR
         os.makedirs(svg_dir, exist_ok=True)
         
         # Save SVG file
@@ -4820,7 +4822,7 @@ async def list_svgs(request: Request):
     Useful for debugging and management.
     """
     try:
-        svg_dir = "svg_exports"
+        svg_dir = SVG_EXPORTS_DIR
         
         if not os.path.exists(svg_dir):
             return JSONResponse(
@@ -4873,7 +4875,7 @@ async def download_all_svgs(request: Request):
     Download all saved SVGs as a ZIP file.
     """
     try:
-        svg_dir = "svg_exports"
+        svg_dir = SVG_EXPORTS_DIR
         
         if not os.path.exists(svg_dir):
             return JSONResponse(
@@ -4924,7 +4926,7 @@ async def generate_batch_svgs(batch_id: int):
     This creates SVG files server-side so users don't need to view each entity.
     """
     try:
-        svg_dir = "svg_exports"
+        svg_dir = SVG_EXPORTS_DIR
         os.makedirs(svg_dir, exist_ok=True)
         
         # Get all enriched items in the batch
@@ -5094,7 +5096,7 @@ async def download_batch_svgs(batch_id: int):
     Download all SVGs for a specific batch as a ZIP file.
     """
     try:
-        svg_dir = "svg_exports"
+        svg_dir = SVG_EXPORTS_DIR
         
         # Get all items in the batch
         with db() as conn:
