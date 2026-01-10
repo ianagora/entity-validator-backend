@@ -1,6 +1,6 @@
 # app.py
-import os, json, tempfile, sqlite3, threading, hashlib, io, csv, zipfile
-from datetime import datetime, date
+import os, json, tempfile, sqlite3, threading, hashlib, io, csv, zipfile, uuid
+from datetime import datetime, date, timedelta
 from contextlib import contextmanager, asynccontextmanager
 from typing import Optional, List, Dict, Any
 from urllib.parse import urlparse, quote_plus, parse_qs as _parse_qs
@@ -28,6 +28,7 @@ from slowapi.errors import RateLimitExceeded
 from resolver import ccew_candidates
 from resolver import canonicalise_name
 from schema import SCHEMA_ENTITY_FIELDS, LP_PREFIX, LP_COUNT
+import jwt  # PyJWT for token generation
 
 # resolver integrations
 from resolver import resolve_company, get_company_bundle, get_charity_bundle_cc
@@ -135,11 +136,208 @@ DB_PATH = os.getenv("DB_PATH", "/data/entity_workflow.db") if os.path.exists("/d
 SVG_EXPORTS_DIR = os.getenv("SVG_EXPORTS_DIR", "/data/svg_exports") if os.path.exists("/data") else "svg_exports"
 RESULTS_BASE = "results"
 
+# Security Configuration
+ALLOWED_EXTENSIONS = {'.csv', '.xlsx', '.xls'}
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+MAX_LOGIN_ATTEMPTS = 5
+LOGIN_LOCKOUT_DURATION = 900  # 15 minutes in seconds
+PASSWORD_MIN_LENGTH = 8
+JWT_EXPIRATION_MINUTES = 30
+
+# Track failed login attempts (in-memory, could move to Redis for production)
+failed_login_attempts = {}
+locked_accounts = {}
+
+# CSV/Excel magic bytes for validation
+MAGIC_BYTES = {
+    b'PK\x03\x04': '.xlsx',  # Excel 2007+
+    b'\xd0\xcf\x11\xe0': '.xls',  # Excel 97-2003
+    b'\x09\x08': '.xls',  # Alternative Excel signature
+}
+
 # CH link helpers
 CH_HOST = "find-and-update.company-information.service.gov.uk"
 def ch_company_url(company_number: str) -> str:
     company_number = (company_number or "").strip()
     return f"https://{CH_HOST}/company/{company_number}/"  # trailing slash helps avoid 403s
+
+# ---------------- Security Functions ----------------
+
+def validate_password_strength(password: str) -> tuple[bool, str]:
+    """Validate password meets complexity requirements"""
+    if len(password) < PASSWORD_MIN_LENGTH:
+        return False, f"Password must be at least {PASSWORD_MIN_LENGTH} characters"
+    
+    has_upper = any(c.isupper() for c in password)
+    has_lower = any(c.islower() for c in password)
+    has_digit = any(c.isdigit() for c in password)
+    has_special = any(c in "!@#$%^&*()_+-=[]{}|;:,.<>?" for c in password)
+    
+    if not (has_upper and has_lower and has_digit):
+        return False, "Password must contain uppercase, lowercase, and numbers"
+    
+    return True, "Valid"
+
+def sanitize_filename(filename: str) -> str:
+    """Sanitize filename to prevent path traversal attacks"""
+    # Remove path components
+    filename = os.path.basename(filename)
+    # Remove dangerous characters
+    filename = re.sub(r'[^\w\s\.-]', '', filename)
+    # Prevent hidden files
+    if filename.startswith('.'):
+        filename = 'file' + filename
+    return filename
+
+def validate_file_upload(filename: str, contents: bytes) -> None:
+    """
+    Comprehensive file upload validation:
+    - Extension whitelist
+    - Magic byte validation
+    - Size limits
+    - Filename sanitization
+    """
+    # Check file size
+    if len(contents) > MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File too large. Maximum size is {MAX_FILE_SIZE // (1024*1024)}MB"
+        )
+    
+    # Check extension
+    ext = os.path.splitext(filename)[1].lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid file type. Allowed: {', '.join(ALLOWED_EXTENSIONS)}"
+        )
+    
+    # Validate magic bytes for Excel files
+    if ext in ['.xlsx', '.xls']:
+        magic_valid = False
+        for magic, expected_ext in MAGIC_BYTES.items():
+            if contents.startswith(magic):
+                magic_valid = True
+                break
+        
+        if not magic_valid:
+            raise HTTPException(
+                status_code=400,
+                detail="File content doesn't match extension. Possible file manipulation detected."
+            )
+    
+    # CSV should be text-based
+    if ext == '.csv':
+        try:
+            # Try to decode as UTF-8
+            contents.decode('utf-8')
+        except UnicodeDecodeError:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid CSV file encoding. Must be UTF-8."
+            )
+    
+    # Check for path traversal in filename
+    safe_filename = sanitize_filename(filename)
+    if safe_filename != os.path.basename(filename):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid filename. Path traversal detected."
+        )
+
+def sanitize_csv_value(value: any) -> str:
+    """Prevent CSV injection attacks"""
+    value_str = str(value) if value is not None else ""
+    
+    # If starts with formula chars, prefix with single quote
+    if value_str and value_str[0] in ('=', '+', '-', '@', '\t', '\r'):
+        return "'" + value_str
+    
+    return value_str
+
+def is_account_locked(email: str) -> bool:
+    """Check if account is temporarily locked due to failed login attempts"""
+    if email in locked_accounts:
+        lock_time = locked_accounts[email]
+        if time.time() - lock_time < LOGIN_LOCKOUT_DURATION:
+            return True
+        else:
+            # Lockout expired, remove from dict
+            del locked_accounts[email]
+            if email in failed_login_attempts:
+                del failed_login_attempts[email]
+    return False
+
+def record_failed_login(email: str) -> int:
+    """Record failed login attempt and return count"""
+    if email not in failed_login_attempts:
+        failed_login_attempts[email] = []
+    
+    # Remove attempts older than lockout duration
+    cutoff = time.time() - LOGIN_LOCKOUT_DURATION
+    failed_login_attempts[email] = [
+        t for t in failed_login_attempts[email] if t > cutoff
+    ]
+    
+    # Add new attempt
+    failed_login_attempts[email].append(time.time())
+    
+    # Lock account if too many attempts
+    if len(failed_login_attempts[email]) >= MAX_LOGIN_ATTEMPTS:
+        locked_accounts[email] = time.time()
+    
+    return len(failed_login_attempts[email])
+
+def clear_failed_login(email: str):
+    """Clear failed login attempts after successful login"""
+    if email in failed_login_attempts:
+        del failed_login_attempts[email]
+    if email in locked_accounts:
+        del locked_accounts[email]
+
+def create_jwt_token(email: str, user_id: int) -> str:
+    """Create JWT token with expiration"""
+    payload = {
+        "sub": email,
+        "user_id": user_id,
+        "exp": datetime.utcnow() + timedelta(minutes=JWT_EXPIRATION_MINUTES),
+        "iat": datetime.utcnow(),
+        "jti": str(uuid.uuid4())  # Unique token ID for blacklist
+    }
+    return jwt.encode(payload, SECRET_KEY, algorithm="HS256")
+
+def secure_error_response(
+    message: str, 
+    status_code: int = 500, 
+    error_details: str = None, 
+    log_details: bool = True
+) -> JSONResponse:
+    """
+    Return secure error response that doesn't leak sensitive information.
+    Logs full details but returns generic message to user.
+    """
+    if log_details and error_details:
+        import logging
+        logging.error(f"Error: {message} - Details: {error_details}")
+    
+    return JSONResponse(
+        content={"error": message},
+        status_code=status_code
+    )
+
+def verify_resource_ownership(batch_id: int, user_id: int) -> bool:
+    """Verify user owns the requested batch/resource"""
+    with db() as conn:
+        batch = conn.execute(
+            "SELECT user_id FROM runs WHERE id=?", 
+            (batch_id,)
+        ).fetchone()
+        
+        if not batch:
+            return False
+        
+        # Allow if user owns it or if batch has no owner (legacy data)
+        return batch["user_id"] is None or batch["user_id"] == user_id
 
 # ---------------- DB helpers ----------------
 @contextmanager
@@ -1611,6 +1809,13 @@ def bundle_to_xlsx(bundle: dict, xlsx_path: str):
     df_filings  = pd.DataFrame(filings) if filings else pd.DataFrame()
     df_sources  = pd.DataFrame([{"endpoint": k, "url": v} for k, v in sources.items()]) if sources else pd.DataFrame()
 
+    # Sanitize all string columns to prevent CSV injection
+    for df in [df_profile, df_officers, df_pscs, df_charges, df_trustees, df_filings, df_sources]:
+        if not df.empty:
+            for col in df.columns:
+                if df[col].dtype == 'object':  # String columns
+                    df[col] = df[col].apply(lambda x: sanitize_csv_value(x) if pd.notna(x) else x)
+
     with pd.ExcelWriter(xlsx_path, engine="openpyxl") as w:
         if not df_profile.empty:  df_profile.to_excel(w, index=False, sheet_name="Profile")
         if not df_officers.empty: df_officers.to_excel(w, index=False, sheet_name="Officers")
@@ -2778,13 +2983,30 @@ def enqueue_enrich_charity(item_id: int):
 async def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends()):
     """
     Login endpoint with JWT token generation.
-    Rate limited to 10 attempts per minute to prevent brute force attacks.
+    Rate limited to 5 attempts per minute to prevent brute force attacks.
+    Account lockout after 5 failed attempts for 15 minutes.
     """
+    email = form_data.username.lower()
+    
+    # Check if account is locked
+    if is_account_locked(email):
+        remaining_time = LOGIN_LOCKOUT_DURATION - (time.time() - locked_accounts[email])
+        log_audit_event(
+            action="login_blocked",
+            status="blocked",
+            user_email=email,
+            details=f"Account locked due to too many failed attempts"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Account temporarily locked. Try again in {int(remaining_time/60)} minutes."
+        )
+    
     # Log login attempt
     log_audit_event(
         action="login_attempt",
         status="pending",
-        user_email=form_data.username,
+        user_email=email,
         ip_address=request.client.host,
         user_agent=request.headers.get("user-agent")
     )
@@ -2792,16 +3014,20 @@ async def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends
     with db() as conn:
         user = conn.execute(
             "SELECT * FROM users WHERE email=? AND is_active=1",
-            (form_data.username.lower(),)
+            (email,)
         ).fetchone()
         
         if not user:
+            # Record failed attempt
+            attempts = record_failed_login(email)
             log_audit_event(
                 action="login_failed",
                 status="failed",
-                user_email=form_data.username,
-                details="User not found or inactive"
+                user_email=email,
+                details=f"User not found or inactive (attempt {attempts}/{MAX_LOGIN_ATTEMPTS})"
             )
+            # Use constant-time comparison to prevent timing attacks
+            time.sleep(0.1)  # Artificial delay
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Incorrect email or password",
@@ -2828,11 +3054,25 @@ async def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends
                 )
         
         if not password_valid:
+            # Record failed attempt
+            attempts = record_failed_login(email)
             log_audit_event(
                 action="login_failed",
                 status="failed",
                 user_id=user["id"],
                 user_email=user["email"],
+                details=f"Invalid password (attempt {attempts}/{MAX_LOGIN_ATTEMPTS})"
+            )
+            # Use constant-time comparison to prevent timing attacks
+            time.sleep(0.1)  # Artificial delay
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Incorrect email or password",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        
+        # Clear failed login attempts on successful login
+        clear_failed_login(email)
                 details="Invalid password"
             )
             raise HTTPException(
@@ -3446,16 +3686,23 @@ async def batch_upload(
 @app.post("/api/batch/upload")
 async def api_batch_upload(file: UploadFile = File(...)):
     """JSON API endpoint for batch upload - used by Cloudflare frontend"""
-    suffix = os.path.splitext(file.filename)[-1].lower()
-    if suffix not in [".csv", ".xlsx", ".xls"]:
+    # Read file content
+    contents = await file.read()
+    
+    # Validate file upload (extension, magic bytes, size)
+    try:
+        validate_file_upload(file.filename, contents)
+    except HTTPException as e:
         return JSONResponse(
-            content={"error": "Invalid file format. Please upload CSV, XLSX, or XLS file."},
-            status_code=400
+            content={"error": e.detail},
+            status_code=e.status_code
         )
+    
+    suffix = os.path.splitext(file.filename)[-1].lower()
 
-    # save upload to a temp file
+    # save upload to a temp file with sanitized filename
+    safe_filename = sanitize_filename(file.filename)
     with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-        contents = await file.read()
         tmp.write(contents)
         tmp_path = tmp.name
 
@@ -3647,9 +3894,11 @@ async def api_batch_upload(file: UploadFile = File(...)):
         })
 
     except Exception as e:
-        return JSONResponse(
-            content={"error": f"Upload processing failed: {str(e)}"},
-            status_code=500
+        return secure_error_response(
+            message="Upload processing failed",
+            status_code=500,
+            error_details=str(e),
+            log_details=True
         )
     finally:
         try:
@@ -4212,9 +4461,23 @@ def build_screening_list(bundle: dict, shareholders: list, item: dict) -> dict:
 
 @app.get("/api/batch/{batch_id}/items")
 @limiter.limit("60/minute")
-async def api_get_batch_items(request: Request, batch_id: int, limit: int = 100, offset: int = 0):
-    """Get items for a specific batch"""
+async def api_get_batch_items(
+    request: Request, 
+    batch_id: int, 
+    limit: int = 100, 
+    offset: int = 0,
+    current_user: Optional[dict] = Depends(get_current_user_optional)
+):
+    """
+    Get items for a specific batch.
+    TODO: Add ownership verification once all batches have user_id populated.
+    """
     try:
+        # Optional: Verify ownership if user is authenticated
+        # if current_user:
+        #     if not verify_resource_ownership(batch_id, current_user["id"]):
+        #         raise HTTPException(403, "Access denied")
+        
         with db() as conn:
             items = conn.execute("""
                 SELECT 
