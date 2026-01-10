@@ -6333,8 +6333,10 @@ async def clear_database(request: Request, current_user: dict = Depends(get_curr
 def health():
     return {
         "status": "healthy",
-        "version": "2.0.1-svg-auto-gen-fix",
+        "version": "2.0.2-item-undefined-fix",
         "svg_fix_deployed": True,
+        "last_commit": "f5a7cb7",
+        "deployment_test": "RAILWAY_AUTO_DEPLOY_TEST_2026_01_10",
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
     }
 
