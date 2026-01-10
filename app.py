@@ -2481,18 +2481,25 @@ def enrich_one(item_id: int, max_retries: int = 3):
         if bundle.get("ownership_tree"):
             try:
                 print(f"[enrich_one] 🎨 Generating SVG for item {item_id}...")
+                print(f"[enrich_one] DEBUG: ownership_tree has {len(bundle.get('ownership_tree', {}).get('shareholders', []))} shareholders")
+                
                 # Build item dict from row data for SVG generation
                 item_data = {
                     "input_name": row["input_name"],
                     "company_number": company_number
                 }
+                print(f"[enrich_one] DEBUG: Calling generate_and_save_ownership_svg with item_data: {item_data}")
+                
                 svg_path = generate_and_save_ownership_svg(
                     item_id=item_id,
                     ownership_tree=bundle.get("ownership_tree"),
                     item=item_data  # Pass item dict with company name/number
                 )
+                
                 print(f"[enrich_one] ✅ Generated ownership SVG: {svg_path}")
                 print(f"[enrich_one] 💾 Will save svg_path to database: {svg_path}")
+                print(f"[enrich_one] 💾 svg_path is None: {svg_path is None}")
+                print(f"[enrich_one] 💾 svg_path value: {repr(svg_path)}")
             except Exception as svg_error:
                 print(f"[enrich_one] ⚠️  Failed to generate SVG: {svg_error}")
                 import traceback
@@ -2501,11 +2508,18 @@ def enrich_one(item_id: int, max_retries: int = 3):
         else:
             print(f"[enrich_one] ⚠️  No ownership_tree found for item {item_id}, skipping SVG generation")
 
+        print(f"[enrich_one] 🔍 About to save to database. svg_path={repr(svg_path)}")
+        
         with db() as conn:
+            print(f"[enrich_one] 💾 Executing UPDATE with svg_path={repr(svg_path)}")
             conn.execute(
                 "UPDATE items SET enrich_status='done', enrich_json_path=?, enrich_xlsx_path=?, shareholders_json=?, shareholders_status=?, ownership_tree_json=?, svg_path=? WHERE id=?",
                 (json_path, xlsx_path, shareholders_json, shareholders_status, ownership_tree_json, svg_path, item_id),
             )
+            print(f"[enrich_one] ✅ Database UPDATE executed successfully")
+            # Verify the update
+            verify_row = conn.execute("SELECT svg_path FROM items WHERE id=?", (item_id,)).fetchone()
+            print(f"[enrich_one] ✅ Verified svg_path in DB: {verify_row['svg_path'] if verify_row else 'NOT FOUND'}")
 
     except Exception as e:
         error_message = str(e)
