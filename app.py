@@ -4458,8 +4458,7 @@ async def api_get_batch_items(
     request: Request, 
     batch_id: int, 
     limit: int = 100, 
-    offset: int = 0,
-    current_user: Optional[dict] = Depends(get_current_user_optional)
+    offset: int = 0
 ):
     """
     Get items for a specific batch.
@@ -4467,6 +4466,7 @@ async def api_get_batch_items(
     """
     try:
         # Optional: Verify ownership if user is authenticated
+        # current_user = None  # TODO: Implement get_current_user_optional
         # if current_user:
         #     if not verify_resource_ownership(batch_id, current_user["id"]):
         #         raise HTTPException(403, "Access denied")
