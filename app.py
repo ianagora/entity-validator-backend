@@ -2208,6 +2208,7 @@ def enrich_one(item_id: int, max_retries: int = 3):
         svg_path = None
         if bundle.get("ownership_tree"):
             try:
+                print(f"[enrich_one] 🎨 Generating SVG for item {item_id}...")
                 # Build item dict from row data for SVG generation
                 item_data = {
                     "input_name": row["input_name"],
@@ -2219,11 +2220,14 @@ def enrich_one(item_id: int, max_retries: int = 3):
                     item=item_data  # Pass item dict with company name/number
                 )
                 print(f"[enrich_one] ✅ Generated ownership SVG: {svg_path}")
+                print(f"[enrich_one] 💾 Will save svg_path to database: {svg_path}")
             except Exception as svg_error:
                 print(f"[enrich_one] ⚠️  Failed to generate SVG: {svg_error}")
                 import traceback
                 print(f"[enrich_one] SVG Error traceback: {traceback.format_exc()}")
                 # Don't fail enrichment if SVG generation fails
+        else:
+            print(f"[enrich_one] ⚠️  No ownership_tree found for item {item_id}, skipping SVG generation")
 
         with db() as conn:
             conn.execute(
