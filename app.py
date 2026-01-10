@@ -2208,14 +2208,21 @@ def enrich_one(item_id: int, max_retries: int = 3):
         svg_path = None
         if bundle.get("ownership_tree"):
             try:
+                # Build item dict from row data for SVG generation
+                item_data = {
+                    "input_name": row["input_name"],
+                    "company_number": company_number
+                }
                 svg_path = generate_and_save_ownership_svg(
                     item_id=item_id,
                     ownership_tree=bundle.get("ownership_tree"),
-                    item=item  # Pass item for company name/number
+                    item=item_data  # Pass item dict with company name/number
                 )
                 print(f"[enrich_one] ✅ Generated ownership SVG: {svg_path}")
             except Exception as svg_error:
                 print(f"[enrich_one] ⚠️  Failed to generate SVG: {svg_error}")
+                import traceback
+                print(f"[enrich_one] SVG Error traceback: {traceback.format_exc()}")
                 # Don't fail enrichment if SVG generation fails
 
         with db() as conn:
