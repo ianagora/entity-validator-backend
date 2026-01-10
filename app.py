@@ -82,6 +82,16 @@ async def lifespan(app: FastAPI):
     os.makedirs(RESULTS_BASE, exist_ok=True)
     init_db()
 
+    # CRITICAL: Reset stuck 'running' jobs on startup (Railway restarts kill worker pool)
+    with db() as conn:
+        stuck_count = conn.execute("""
+            UPDATE items 
+            SET enrich_status='pending' 
+            WHERE enrich_status='running'
+        """).rowcount
+        if stuck_count > 0:
+            print(f"[STARTUP] ♻️  Reset {stuck_count} stuck 'running' jobs to 'pending'")
+
     # Backfill / repair enrichment:
     #  - Route CH items to CH worker
     #  - Route CCEW items to Charity worker (lookup charity_number if missing)
@@ -92,7 +102,7 @@ async def lifespan(app: FastAPI):
             FROM items
             WHERE pipeline_status='auto'
               AND (enrich_status IS NULL OR enrich_status IN ('pending','queued'))
-            ORDER BY id ASC
+            ORDER BY ID ASC
         """).fetchall()
 
     for r in rows:
