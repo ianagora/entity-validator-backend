@@ -6626,7 +6626,7 @@ def health():
         "version": "2.0.2-item-undefined-fix",
         "svg_fix_deployed": True,
         "last_commit": "f5a7cb7",
-        "deployment_test": "RAILWAY_AUTO_DEPLOY_TEST_2026_01_10",
+        "deployment_test": "RAILWAY_MANUAL_REDEPLOY_2026_01_10_15_18",
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
     }
 
