@@ -2484,7 +2484,15 @@ def enrich_one(item_id: int, max_retries: int = 3):
         
         # Serialize ownership tree for database storage (to survive Railway redeployments)
         # Note: ownership_tree is guaranteed to exist now (created above if missing)
+        print(f"[enrich_one] DEBUG: bundle.get('ownership_tree') exists: {bundle.get('ownership_tree') is not None}")
+        print(f"[enrich_one] DEBUG: ownership_tree type: {type(bundle.get('ownership_tree'))}")
+        if bundle.get("ownership_tree"):
+            print(f"[enrich_one] DEBUG: ownership_tree keys: {bundle.get('ownership_tree').keys()}")
+            print(f"[enrich_one] DEBUG: ownership_tree shareholders count: {len(bundle.get('ownership_tree', {}).get('shareholders', []))}")
+        
         ownership_tree_json = json.dumps(bundle.get("ownership_tree"), ensure_ascii=False)
+        print(f"[enrich_one] DEBUG: ownership_tree_json length: {len(ownership_tree_json) if ownership_tree_json else 0}")
+        print(f"[enrich_one] DEBUG: ownership_tree_json preview: {ownership_tree_json[:200] if ownership_tree_json and len(ownership_tree_json) > 200 else ownership_tree_json}")
 
         # SVG generation is handled by frontend when viewing items or via batch regenerate endpoint
         # No need to generate server-side during enrichment - frontend does it better
@@ -6625,7 +6633,7 @@ def health():
         "status": "healthy",
         "version": "2.0.2-item-undefined-fix",
         "svg_fix_deployed": True,
-        "last_commit": "f5a7cb7",
+        "last_commit": "7ffc67d",
         "deployment_test": "RAILWAY_MANUAL_REDEPLOY_2026_01_10_15_18",
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
     }
