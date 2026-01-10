@@ -396,8 +396,11 @@ def get_cors_config():
         # Production: Strict CORS - only allow specific frontend domains
         return {
             "allow_origins": [
-                "https://project-a4de28cf-dev.pages.dev",  # Production frontend
-                "https://*.project-a4de28cf-dev.pages.dev",  # All preview deployments
+                "https://project-a4de28cf-dev.pages.dev",  # Old production frontend
+                "https://*.project-a4de28cf-dev.pages.dev",  # Old preview deployments
+                "https://entity-validator.pages.dev",  # New production frontend
+                "https://*.entity-validator.pages.dev",  # New preview deployments (includes development.entity-validator.pages.dev)
+                "https://a2e9fef9.project-a4de28cf-dev.pages.dev",  # Specific old deployment
                 # Add your custom domain here when ready
                 # "https://yourapp.com",
             ],
