@@ -3073,13 +3073,6 @@ async def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends
         
         # Clear failed login attempts on successful login
         clear_failed_login(email)
-                details="Invalid password"
-            )
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Incorrect email or password",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
         
         # Create access token
         from datetime import timedelta
