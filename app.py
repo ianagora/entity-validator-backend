@@ -77,7 +77,7 @@ from security_middleware import (
 # User Management System
 from user_management import (
     init_user_management, create_user, verify_email, get_user_by_email,
-    update_last_login, create_password_reset_token,
+    update_last_login, list_users, create_password_reset_token,
     reset_password_with_token, send_verification_email, send_password_reset_email
 )
 
@@ -3041,19 +3041,6 @@ def enqueue_enrich_charity(item_id: int):
 
 # User Management Routes - Add these to app.py
 
-from user_management import (
-    init_user_management, create_user, verify_email, get_user_by_email,
-    update_last_login, list_users, create_password_reset_token,
-    reset_password_with_token, send_verification_email, send_password_reset_email
-)
-
-# Initialize user management on startup
-# Add to lifespan function:
-#   init_user_management()
-
-# ==============================================================================
-# REGISTRATION
-# ==============================================================================
 
 @app.get("/register")
 async def register_page(request: Request):
