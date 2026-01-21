@@ -200,9 +200,13 @@ class CSRFMiddleware(BaseHTTPMiddleware):
         if request.url.path in ["/health", "/api/health", "/docs", "/redoc", "/openapi.json"]:
             return await call_next(request)
         
-        # Skip for Bearer auth (stateless API)
+        # Skip for Bearer auth (stateless API) - includes frontend API calls
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
+            return await call_next(request)
+        
+        # Skip for API key auth (X-API-Key header for frontend)
+        if request.headers.get("X-API-Key"):
             return await call_next(request)
         
         # Validate CSRF
