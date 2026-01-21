@@ -231,6 +231,29 @@ async def health_check():
 
 
 
+
+@app.post("/api/admin/unlock-account")
+async def unlock_account(email: str):
+    """Unlock a locked account (removes lockout)."""
+    try:
+        # Clear the lockout from memory
+        if email in locked_accounts:
+            del locked_accounts[email]
+        if email in failed_login_attempts:
+            del failed_login_attempts[email]
+        
+        return {
+            "success": True,
+            "message": f"Account {email} unlocked",
+            "note": "Failed login attempts cleared"
+        }
+    except Exception as e:
+        import traceback
+        return {
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
 @app.post("/api/admin/recreate-frontend-api-key")
 async def recreate_frontend_api_key():
     """Recreate the frontend API key (revokes old one and creates new one)."""

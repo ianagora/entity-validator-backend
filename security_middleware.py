@@ -141,7 +141,8 @@ class AuthEnforcementMiddleware(BaseHTTPMiddleware):
         "/api/admin/force-init",
         "/api/admin/force-init-api-keys",
         "/api/admin/get-frontend-api-key",
-        "/api/admin/recreate-frontend-api-key",  # Force user init for first-time setup
+        "/api/admin/recreate-frontend-api-key", "/api/admin/unlock-account",
+        "/api/admin/unlock-account",  # Force user init for first-time setup
         "/docs",
         "/redoc",
         "/openapi.json"
@@ -228,7 +229,7 @@ class CSRFMiddleware(BaseHTTPMiddleware):
         
         # Skip for health/docs and auth endpoints
         if request.url.path in ["/health", "/api/health", "/docs", "/redoc", "/openapi.json", 
-                                "/auth/login", "/auth/refresh", "/api/admin/force-init", "/api/admin/force-init-api-keys", "/api/admin/recreate-frontend-api-key"]:
+                                "/auth/login", "/auth/refresh", "/api/admin/force-init", "/api/admin/force-init-api-keys", "/api/admin/recreate-frontend-api-key", "/api/admin/unlock-account"]:
             return await call_next(request)
         
         # Skip for Bearer auth (stateless API) - includes frontend API calls
