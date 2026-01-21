@@ -228,7 +228,7 @@ class CSRFMiddleware(BaseHTTPMiddleware):
         
         # Skip for health/docs and auth endpoints
         if request.url.path in ["/health", "/api/health", "/docs", "/redoc", "/openapi.json", 
-                                "/auth/login", "/auth/refresh", "/api/admin/force-init", "/api/admin/force-init-api-keys"]:
+                                "/auth/login", "/auth/refresh", "/api/admin/force-init", "/api/admin/force-init-api-keys", "/api/admin/recreate-frontend-api-key"]:
             return await call_next(request)
         
         # Skip for Bearer auth (stateless API) - includes frontend API calls
