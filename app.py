@@ -287,6 +287,62 @@ async def cleanup_database():
         }
 
 
+
+@app.get("/api/admin/get-full-api-key")
+async def get_full_api_key():
+    """
+    TEMPORARY DEBUG ENDPOINT - Returns the full API key for frontend.
+    ⚠️ SECURITY: This should be removed after setup or protected with admin auth!
+    """
+    try:
+        with db() as conn:
+            # Get the Frontend Default API key record
+            key_record = conn.execute("""
+                SELECT key_id, key_hash, name, scopes, created_at, expires_at
+                FROM api_keys 
+                WHERE name = 'Frontend Default' AND is_active = 1
+                ORDER BY created_at DESC
+                LIMIT 1
+            """).fetchone()
+            
+            if not key_record:
+                return {
+                    "success": False,
+                    "error": "Frontend Default API key not found",
+                    "note": "Run /api/admin/force-init-api-keys first"
+                }
+            
+            # We can't retrieve the original key from the hash
+            # So we need to regenerate it
+            from api_key_management import create_api_key
+            
+            # Delete old key
+            conn.execute("DELETE FROM api_keys WHERE name = 'Frontend Default'")
+            
+            # Create new one
+            key_info = create_api_key(
+                name="Frontend Default",
+                description="Default API key for frontend application",
+                scopes="api:read,api:write,batch:upload",
+                expires_in_days=365
+            )
+            
+            return {
+                "success": True,
+                "api_key": key_info["api_key"],  # Full key with secret
+                "key_id": key_info["key_id"],
+                "scopes": key_info["scopes"],
+                "expires_at": key_info["expires_at"],
+                "warning": "⚠️ Save this key! It won't be shown again."
+            }
+    except Exception as e:
+        import traceback
+        return {
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
+
 @app.post("/api/admin/recreate-frontend-api-key")
 async def recreate_frontend_api_key():
     """Recreate the frontend API key (revokes old one and creates new one)."""
