@@ -222,8 +222,8 @@ class CSRFMiddleware(BaseHTTPMiddleware):
         if request.method in ["GET", "HEAD", "OPTIONS"]:
             return await call_next(request)
         
-        # Skip for health/docs
-        if request.url.path in ["/health", "/api/health", "/docs", "/redoc", "/openapi.json"]:
+        # Skip for health/docs and auth endpoints
+        if request.url.path in ["/health", "/api/health", "/docs", "/redoc", "/openapi.json", "/auth/login", "/auth/refresh"]:
             return await call_next(request)
         
         # Skip for Bearer auth (stateless API) - includes frontend API calls
