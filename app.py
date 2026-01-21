@@ -1,5 +1,5 @@
 # app.py
-import os, json, tempfile, sqlite3, threading, hashlib, io, csv, zipfile, uuid
+import os, json, tempfile, sqlite3, threading, hashlib, io, csv, zipfile, uuid, sys
 from datetime import datetime, date, timedelta
 from contextlib import contextmanager, asynccontextmanager
 from typing import Optional, List, Dict, Any
@@ -100,7 +100,23 @@ print(f"[WORKER_POOL] Initialized with {MAX_CONCURRENT_WORKERS} concurrent worke
 # ---------------- App Setup ----------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup logic
+    # Startup logic - Print deployment marker
+    import subprocess
+    try:
+        git_commit = subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD'], cwd=os.path.dirname(__file__), text=True).strip()
+    except:
+        git_commit = "unknown"
+    
+    print("\n" + "="*70)
+    print("🚀 DEPLOYMENT STARTED")
+    print("="*70)
+    print(f"Git Commit:  {git_commit}")
+    print(f"Environment: {os.getenv('ENVIRONMENT', 'development')}")
+    print(f"Timestamp:   {datetime.utcnow().isoformat()}Z")
+    print(f"Python:      {sys.version.split()[0]}")
+    print(f"Railway:     {os.getenv('RAILWAY_ENVIRONMENT', 'N/A')}")
+    print("="*70 + "\n")
+    
     os.makedirs(RESULTS_BASE, exist_ok=True)
     init_db()
     
