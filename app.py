@@ -3625,7 +3625,7 @@ async def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends
             "user": {
                 "id": user["id"],
                 "email": user["email"],
-                "name": user.get("name", "")
+                "name": _row_get(user, "name", "")
             }
         })
         
@@ -3903,8 +3903,8 @@ async def get_current_user_info(request: Request, current_user: dict = Depends(g
     return {
         "id": current_user["id"],
         "email": current_user["email"],
-        "full_name": current_user.get("full_name"),
-        "is_active": current_user.get("is_active")
+        "full_name": _row_get(current_user, "full_name", ""),
+        "is_active": _row_get(current_user, "is_active", False)
     }
 
 # ---------------- Admin: Users CRUD (login-free) ----------------
