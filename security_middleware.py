@@ -142,6 +142,7 @@ class AuthEnforcementMiddleware(BaseHTTPMiddleware):
         "/api/admin/force-init-api-keys",
         "/api/admin/get-frontend-api-key",
         "/api/admin/recreate-frontend-api-key", "/api/admin/unlock-account",
+        "/api/admin/get-full-api-key",
         "/api/admin/unlock-account",  # Force user init for first-time setup
         "/docs",
         "/redoc",
