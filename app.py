@@ -229,6 +229,74 @@ async def health_check():
 
 
 
+
+
+@app.post("/api/admin/recreate-frontend-api-key")
+async def recreate_frontend_api_key():
+    """Recreate the frontend API key (revokes old one and creates new one)."""
+    try:
+        from api_key_management import revoke_api_key, create_api_key, list_api_keys
+        
+        # Find and revoke existing frontend key
+        keys = list_api_keys()
+        for key in keys:
+            if "Frontend" in key.get("name", ""):
+                revoke_api_key(key["key_id"])
+                print(f"[RECREATE] Revoked old key: {key['key_id']}")
+        
+        # Create new key
+        key_info = create_api_key(
+            name="Frontend Default",
+            description="API key for Cloudflare Pages frontend",
+            scopes="api:read,api:write,batch:upload",
+            expires_in_days=365
+        )
+        
+        return {
+            "success": True,
+            "api_key": key_info["api_key"],
+            "key_id": key_info["key_id"],
+            "message": "New API key created - update your frontend with this value",
+            "expires_at": key_info["expires_at"]
+        }
+    except Exception as e:
+        import traceback
+        return {
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
+@app.get("/api/admin/get-frontend-api-key")
+async def get_frontend_api_key():
+    """TEMPORARY: Get the frontend API key for configuration (REMOVE IN PRODUCTION!)"""
+    try:
+        from api_key_management import list_api_keys
+        keys = list_api_keys()
+        
+        # Find the frontend key
+        frontend_key = None
+        for key in keys:
+            if "Frontend" in key.get("name", ""):
+                frontend_key = key
+                break
+        
+        if frontend_key:
+            return {
+                "success": True,
+                "key_id": frontend_key["key_id"],
+                "name": frontend_key["name"],
+                "note": "⚠️ The full API key was shown in Railway logs when it was created. This endpoint only shows the key_id.",
+                "scopes": frontend_key.get("scopes", [])
+            }
+        else:
+            return {"success": False, "error": "No frontend key found"}
+    except Exception as e:
+        import traceback
+        return {
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
 @app.post("/api/admin/force-init-api-keys")
 async def force_api_key_init():
     """Force re-initialization of API key management (public endpoint for setup)."""

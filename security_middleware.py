@@ -139,7 +139,9 @@ class AuthEnforcementMiddleware(BaseHTTPMiddleware):
         "/token",
         "/api/health",
         "/api/admin/force-init",
-        "/api/admin/force-init-api-keys",  # Force user init for first-time setup
+        "/api/admin/force-init-api-keys",
+        "/api/admin/get-frontend-api-key",
+        "/api/admin/recreate-frontend-api-key",  # Force user init for first-time setup
         "/docs",
         "/redoc",
         "/openapi.json"
