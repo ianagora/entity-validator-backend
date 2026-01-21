@@ -69,7 +69,10 @@
     {% if error %}
       <div class="error">{{ error }}</div>
     {% endif %}
-    <form method="post" action="/login">
+    <form method="post" action="/login" id="loginForm">
+      <!-- CSRF Token (Added 2026-01-21 CREST hardening) -->
+      <input type="hidden" name="csrf_token" id="csrf_token" value="">
+      
       <div class="field">
         <label for="email">Email</label>
         <input type="text" id="email" name="email" required>
@@ -81,5 +84,32 @@
       <button type="submit">Sign In</button>
     </form>
   </div>
+  
+  <script>
+    // CSRF Protection (Added 2026-01-21)
+    // Read CSRF token from cookie and inject into form
+    function getCookie(name) {
+      const value = `; ${document.cookie}`;
+      const parts = value.split(`; ${name}=`);
+      if (parts.length === 2) return parts.pop().split(';').shift();
+      return '';
+    }
+    
+    // Set CSRF token before form submission
+    document.getElementById('loginForm').addEventListener('submit', function(e) {
+      const csrfToken = getCookie('csrf_token');
+      if (csrfToken) {
+        document.getElementById('csrf_token').value = csrfToken;
+      }
+    });
+    
+    // On page load, request CSRF token if not present
+    window.addEventListener('load', function() {
+      if (!getCookie('csrf_token')) {
+        // Trigger GET /login to receive CSRF cookie
+        fetch('/login', { method: 'GET', credentials: 'include' });
+      }
+    });
+  </script>
 </body>
 </html>

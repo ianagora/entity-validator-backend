@@ -28,7 +28,6 @@ from slowapi.errors import RateLimitExceeded
 from resolver import ccew_candidates
 from resolver import canonicalise_name
 from schema import SCHEMA_ENTITY_FIELDS, LP_PREFIX, LP_COUNT
-import jwt  # PyJWT for token generation
 
 # resolver integrations
 from resolver import resolve_company, get_company_bundle, get_charity_bundle_cc
@@ -64,6 +63,15 @@ from security import (
     cleanup_expired_tokens,
     oauth2_scheme,
     SecurityMonitor
+)
+
+# CREST Security Middleware (Added by security hardening 2026-01-21)
+from security_middleware import (
+    SecurityHeadersMiddleware,
+    AuthEnforcementMiddleware,
+    CSRFMiddleware,
+    csrf_protection,
+    get_real_ip
 )
 
 # ---------------- Worker Pool Configuration ----------------
@@ -125,8 +133,12 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Entity Batch Validator with Security", lifespan=lifespan)
 templates = Jinja2Templates(directory="templates")
 
-# Initialize rate limiter
-limiter = Limiter(key_func=get_remote_address)
+# Initialize rate limiter with Cloudflare IP support
+def get_client_ip(request: Request) -> str:
+    """Get real client IP, prioritizing Cloudflare headers."""
+    return get_real_ip(request)
+
+limiter = Limiter(key_func=get_client_ip)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
@@ -138,8 +150,39 @@ app.add_middleware(
     **cors_config
 )
 
+# CREST Security Middleware Stack (Added 2026-01-21)
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(AuthEnforcementMiddleware)
+app.add_middleware(CSRFMiddleware)
+
 # Serve /static/* from the local "static" folder
 app.mount("/static", StaticFiles(directory="static"), name="static")
+
+# ==============================================================================
+# HEALTH & STATUS ENDPOINTS
+# ==============================================================================
+
+@app.get("/health")
+@app.head("/health")
+@app.get("/api/health")
+async def health_check():
+    """Health check endpoint for Railway and monitoring."""
+    return {
+        "status": "healthy",
+        "version": os.getenv("RAILWAY_GIT_COMMIT_SHA", "unknown")[:8],
+        "environment": os.getenv("ENVIRONMENT", "development"),
+        "security_hardened": "2026-01-21-crest",
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+@app.get("/")
+async def root(request: Request):
+    """Root endpoint - redirect to login or dashboard."""
+    # Check if user is authenticated
+    token = request.cookies.get("access_token") or request.headers.get("Authorization", "").replace("Bearer ", "")
+    if token:
+        return RedirectResponse(url="/batch-validate", status_code=HTTP_302_FOUND)
+    return RedirectResponse(url="/login", status_code=HTTP_302_FOUND)
 
 # Use persistent storage on Railway volume (falls back to local for development)
 DB_PATH = os.getenv("DB_PATH", "/data/entity_workflow.db") if os.path.exists("/data") else "entity_workflow.db"
@@ -2988,12 +3031,71 @@ def enqueue_enrich_charity(item_id: int):
 # AUTHENTICATION & AUTHORIZATION ENDPOINTS (Phase 1: Critical Security)
 # ============================================================================
 
+@app.get("/login")
+async def login_page(request: Request):
+    """Render login page and set CSRF token."""
+    # Generate and set CSRF token
+    csrf_token = csrf_protection.generate_csrf_token()
+    response = templates.TemplateResponse(
+        "login.html",
+        {"request": request, "error": request.query_params.get("error")}
+    )
+    csrf_protection.set_csrf_cookie(response, csrf_token)
+    return response
+
+@app.post("/login")
+@limiter.limit("10/minute")
+async def login_form_submit(request: Request, email: str = Form(...), password: str = Form(...), csrf_token: str = Form(...)):
+    """HTML form login handler with CSRF protection."""
+    # Validate CSRF
+    csrf_cookie = request.cookies.get("csrf_token")
+    if not csrf_cookie or csrf_cookie != csrf_token:
+        log_audit_event(
+            action="login_csrf_failed",
+            status="blocked",
+            user_email=email,
+            ip_address=get_real_ip(request),
+            details="CSRF validation failed on login form"
+        )
+        return RedirectResponse(url="/login?error=csrf", status_code=HTTP_302_FOUND)
+    
+    # Use the same login logic as /auth/login but return redirect
+    try:
+        # Create form data object
+        from fastapi.security import OAuth2PasswordRequestForm
+        form = OAuth2PasswordRequestForm(username=email, password=password, scope="")
+        
+        # Call the main login endpoint logic (reuse)
+        response = await login(request, form)
+        
+        # Redirect to dashboard on success
+        redirect = RedirectResponse(url="/batch-validate", status_code=HTTP_302_FOUND)
+        
+        # Copy cookies from login response
+        for cookie_name in ["access_token", "refresh_token", "csrf_token"]:
+            if cookie_name in response.cookies:
+                redirect.set_cookie(
+                    key=cookie_name,
+                    value=response.cookies[cookie_name],
+                    httponly=(cookie_name != "csrf_token"),
+                    secure=os.getenv("ENVIRONMENT", "development").lower() == "production",
+                    samesite="lax"
+                )
+        
+        return redirect
+        
+    except HTTPException as e:
+        return RedirectResponse(
+            url=f"/login?error={e.detail}",
+            status_code=HTTP_302_FOUND
+        )
+
 @app.post("/auth/login")
-@limiter.limit("5/minute")
+@limiter.limit("10/minute")  # Increased from 5 to 10 with Cloudflare rate limiting as primary defense
 async def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends()):
     """
     Login endpoint with JWT token generation.
-    Rate limited to 5 attempts per minute to prevent brute force attacks.
+    Rate limited to 10 attempts per minute (combined with Cloudflare protection).
     Account lockout after 5 failed attempts for 15 minutes.
     """
     email = form_data.username.lower()
@@ -3095,21 +3197,55 @@ async def login(request: Request, form_data: OAuth2PasswordRequestForm = Depends
         # Create refresh token
         refresh_token = create_refresh_token(data={"sub": str(user["id"])})
         
-        # Log successful login
+        # Generate CSRF token for subsequent requests
+        csrf_token = csrf_protection.generate_csrf_token()
+        
+        # Create response with tokens in HttpOnly cookies
+        response = JSONResponse(content={
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+            "token_type": "bearer",
+            "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+            "user": {
+                "id": user["id"],
+                "email": user["email"],
+                "name": user.get("name", "")
+            }
+        })
+        
+        # Set auth cookies (HttpOnly, Secure in production)
+        is_production = os.getenv("ENVIRONMENT", "development").lower() == "production"
+        response.set_cookie(
+            key="access_token",
+            value=access_token,
+            httponly=True,
+            secure=is_production,
+            samesite="lax",
+            max_age=ACCESS_TOKEN_EXPIRE_MINUTES * 60
+        )
+        response.set_cookie(
+            key="refresh_token",
+            value=refresh_token,
+            httponly=True,
+            secure=is_production,
+            samesite="lax",
+            max_age=REFRESH_TOKEN_EXPIRE_DAYS * 24 * 60 * 60
+        )
+        
+        # Set CSRF token cookie
+        csrf_protection.set_csrf_cookie(response, csrf_token)
+        
+        # Log successful login with real IP
         log_audit_event(
             action="login_success",
             status="success",
             user_id=user["id"],
             user_email=user["email"],
-            ip_address=request.client.host
+            ip_address=get_real_ip(request),
+            user_agent=request.headers.get("user-agent")
         )
         
-        return {
-            "access_token": access_token,
-            "refresh_token": refresh_token,
-            "token_type": "bearer",
-            "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60
-        }
+        return response
 
 @app.post("/auth/refresh")
 @limiter.limit("10/minute")
