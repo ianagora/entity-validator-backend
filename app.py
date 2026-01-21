@@ -228,6 +228,30 @@ async def health_check():
     }
 
 
+
+@app.post("/api/admin/force-init-api-keys")
+async def force_api_key_init():
+    """Force re-initialization of API key management (public endpoint for setup)."""
+    try:
+        from api_key_management import init_api_key_management, list_api_keys
+        init_api_key_management()
+        
+        # List active keys
+        keys = list_api_keys()
+        
+        return {
+            "success": True,
+            "message": "API key management initialized successfully",
+            "active_keys_count": len(keys),
+            "note": "Check Railway logs for the API key value"
+        }
+    except Exception as e:
+        import traceback
+        return {
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
 @app.post("/api/admin/force-init")
 async def force_user_init():
     """Force re-initialization of user management (public endpoint for first-time setup)."""
