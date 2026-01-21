@@ -227,6 +227,25 @@ async def health_check():
         "timestamp": datetime.utcnow().isoformat()
     }
 
+
+@app.post("/api/admin/force-init")
+async def force_user_init():
+    """Force re-initialization of user management (public endpoint for first-time setup)."""
+    try:
+        init_user_management()
+        return {
+            "success": True, 
+            "message": "User management initialized successfully",
+            "note": "Default admin: admin@entity-validator.local / ChangeMe123!"
+        }
+    except Exception as e:
+        import traceback
+        return {
+            "success": False, 
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
+
 @app.get("/")
 async def root(request: Request):
     """Root endpoint - redirect to login or dashboard."""
