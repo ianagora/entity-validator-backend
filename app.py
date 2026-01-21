@@ -97,7 +97,17 @@ async def lifespan(app: FastAPI):
     # Startup logic
     os.makedirs(RESULTS_BASE, exist_ok=True)
     init_db()
-    init_user_management()  # Initialize user management system
+    
+    # Initialize user management system (with error handling)
+    try:
+        print("[STARTUP] Initializing user management...")
+        init_user_management()
+        print("[STARTUP] ✓ User management initialized")
+    except Exception as e:
+        print(f"[STARTUP] ⚠️  User management initialization failed: {e}")
+        import traceback
+        traceback.print_exc()
+        # Continue startup anyway - don't block the app
 
     # CRITICAL: Reset stuck 'running' jobs on startup (Railway restarts kill worker pool)
     with db() as conn:
