@@ -232,7 +232,56 @@ async def health_check():
 async def force_user_init():
     """Force re-initialization of user management (public endpoint for first-time setup)."""
     try:
+        # Step 1: Check if users table exists
+        with db() as conn:
+            tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='users'").fetchone()
+            
+            if tables:
+                # Check if role column exists
+                try:
+                    conn.execute("SELECT role FROM users LIMIT 1")
+                except sqlite3.OperationalError:
+                    # role column doesn't exist - need to migrate
+                    print("[FORCE_INIT] Migrating users table schema...")
+                    
+                    # Backup old users table
+                    conn.execute("ALTER TABLE users RENAME TO users_old")
+                    
+                    # Create new users table with correct schema (from user_management.py)
+                    conn.execute("""
+                        CREATE TABLE users (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            email TEXT UNIQUE NOT NULL,
+                            name TEXT NOT NULL,
+                            password_hash TEXT NOT NULL,
+                            role TEXT NOT NULL DEFAULT 'user',
+                            is_active INTEGER NOT NULL DEFAULT 0,
+                            is_verified INTEGER NOT NULL DEFAULT 0,
+                            created_at TEXT NOT NULL,
+                            updated_at TEXT NOT NULL,
+                            last_login TEXT,
+                            login_count INTEGER DEFAULT 0,
+                            failed_login_attempts INTEGER DEFAULT 0,
+                            locked_until TEXT
+                        )
+                    """)
+                    
+                    # Migrate data if old table had data
+                    old_count = conn.execute("SELECT COUNT(*) FROM users_old").fetchone()[0]
+                    if old_count > 0:
+                        conn.execute("""
+                            INSERT INTO users (id, email, name, password_hash, created_at, updated_at)
+                            SELECT id, email, name, password_hash, created_at, updated_at
+                            FROM users_old
+                        """)
+                        print(f"[FORCE_INIT] Migrated {old_count} users")
+                    
+                    # Drop old table
+                    conn.execute("DROP TABLE users_old")
+        
+        # Step 2: Run normal initialization
         init_user_management()
+        
         return {
             "success": True, 
             "message": "User management initialized successfully",
@@ -6504,6 +6553,7 @@ from fastapi.responses import FileResponse
 import pandas as pd
 import tempfile
 import os
+import sqlite3
 from datetime import datetime
 
 def _compare_impacts(row):
