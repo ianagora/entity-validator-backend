@@ -81,6 +81,12 @@ from user_management import (
     reset_password_with_token, send_verification_email, send_password_reset_email
 )
 
+# API Key Management
+from api_key_management import (
+    init_api_key_management, create_api_key, verify_api_key,
+    list_api_keys, revoke_api_key, log_api_key_usage
+)
+
 
 # ---------------- Worker Pool Configuration ----------------
 # CRITICAL: Limit concurrent enrichments to prevent memory exhaustion
@@ -105,6 +111,17 @@ async def lifespan(app: FastAPI):
         print("[STARTUP] ✓ User management initialized")
     except Exception as e:
         print(f"[STARTUP] ⚠️  User management initialization failed: {e}")
+        import traceback
+        traceback.print_exc()
+        # Continue startup anyway - don't block the app
+    
+    # Initialize API key management system (with error handling)
+    try:
+        print("[STARTUP] Initializing API key management...")
+        init_api_key_management()
+        print("[STARTUP] ✓ API key management initialized")
+    except Exception as e:
+        print(f"[STARTUP] ⚠️  API key management initialization failed: {e}")
         import traceback
         traceback.print_exc()
         # Continue startup anyway - don't block the app

@@ -162,17 +162,43 @@ class AuthEnforcementMiddleware(BaseHTTPMiddleware):
         
         # Enforce auth on /api/* routes (except /api/health)
         if path.startswith("/api/") and path != "/api/health":
-            # Check for authentication (cookie or Bearer token)
+            # Check for authentication (API key, Bearer token, or cookie)
             has_auth = False
+            auth_method = None
             
-            # Check Bearer token
-            auth_header = request.headers.get("Authorization", "")
-            if auth_header.startswith("Bearer "):
-                has_auth = True
+            # Priority 1: Check API Key (X-API-Key header)
+            api_key_header = request.headers.get("X-API-Key", "")
+            if api_key_header:
+                # Import verify_api_key here to avoid circular imports
+                try:
+                    from api_key_management import verify_api_key, log_api_key_usage
+                    key_info = verify_api_key(api_key_header)
+                    if key_info:
+                        has_auth = True
+                        auth_method = "api_key"
+                        # Log usage for auditing
+                        log_api_key_usage(
+                            key_id=key_info['key_id'],
+                            endpoint=path,
+                            method=request.method,
+                            ip_address=request.headers.get("CF-Connecting-IP") or request.client.host,
+                            user_agent=request.headers.get("User-Agent")
+                        )
+                except Exception as e:
+                    logger.warning(f"API key verification failed: {e}")
             
-            # Check auth cookie
-            if "access_token" in request.cookies or "session" in request.cookies:
-                has_auth = True
+            # Priority 2: Check Bearer token
+            if not has_auth:
+                auth_header = request.headers.get("Authorization", "")
+                if auth_header.startswith("Bearer "):
+                    has_auth = True
+                    auth_method = "bearer_token"
+            
+            # Priority 3: Check auth cookie
+            if not has_auth:
+                if "access_token" in request.cookies or "session" in request.cookies:
+                    has_auth = True
+                    auth_method = "cookie"
             
             if not has_auth:
                 return JSONResponse(
