@@ -254,6 +254,39 @@ async def unlock_account(email: str):
             "error": str(e),
             "traceback": traceback.format_exc()
         }
+
+@app.post("/api/admin/cleanup-database")
+async def cleanup_database():
+    """Remove leftover migration tables (users_old) that break foreign keys."""
+    try:
+        with db() as conn:
+            # Check if users_old exists
+            tables = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='users_old'"
+            ).fetchall()
+            
+            if tables:
+                conn.execute("DROP TABLE users_old")
+                return {
+                    "success": True,
+                    "message": "Cleaned up users_old table",
+                    "tables_dropped": ["users_old"]
+                }
+            else:
+                return {
+                    "success": True,
+                    "message": "No cleanup needed",
+                    "tables_dropped": []
+                }
+    except Exception as e:
+        import traceback
+        return {
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        }
+
+
 @app.post("/api/admin/recreate-frontend-api-key")
 async def recreate_frontend_api_key():
     """Recreate the frontend API key (revokes old one and creates new one)."""
