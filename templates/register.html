@@ -1,0 +1,250 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Register – Entity Validator</title>
+  <style>
+    body {
+      font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      background: #f3f4f6;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      padding: 20px;
+    }
+    .register-box {
+      background: white;
+      padding: 32px;
+      border-radius: 12px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+      width: 100%;
+      max-width: 420px;
+    }
+    h2 {
+      margin-top: 0;
+      font-size: 24px;
+      color: #111827;
+      text-align: center;
+    }
+    .field { margin-bottom: 16px; }
+    label {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 14px;
+      color: #374151;
+      font-weight: 500;
+    }
+    input[type="text"], input[type="email"], input[type="password"], select {
+      width: 100%;
+      padding: 10px;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      font-size: 14px;
+      box-sizing: border-box;
+    }
+    input:focus, select:focus {
+      outline: none;
+      border-color: #2563eb;
+      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+    }
+    button {
+      width: 100%;
+      padding: 12px;
+      background: #2563eb;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      font-size: 15px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    button:hover { background: #1d4ed8; }
+    button:disabled {
+      background: #9ca3af;
+      cursor: not-allowed;
+    }
+    .error {
+      background: #fee2e2;
+      border: 1px solid #fecaca;
+      color: #b91c1c;
+      padding: 12px;
+      margin-bottom: 16px;
+      border-radius: 6px;
+      font-size: 14px;
+    }
+    .success {
+      background: #d1fae5;
+      border: 1px solid #a7f3d0;
+      color: #065f46;
+      padding: 12px;
+      margin-bottom: 16px;
+      border-radius: 6px;
+      font-size: 14px;
+    }
+    .help-text {
+      font-size: 12px;
+      color: #6b7280;
+      margin-top: 4px;
+    }
+    .password-strength {
+      height: 4px;
+      background: #e5e7eb;
+      border-radius: 2px;
+      margin-top: 8px;
+      overflow: hidden;
+    }
+    .password-strength-bar {
+      height: 100%;
+      transition: width 0.3s, background 0.3s;
+      width: 0%;
+    }
+    .strength-weak { background: #ef4444; width: 33%; }
+    .strength-medium { background: #f59e0b; width: 66%; }
+    .strength-strong { background: #10b981; width: 100%; }
+    .link {
+      text-align: center;
+      margin-top: 16px;
+      font-size: 14px;
+      color: #6b7280;
+    }
+    .link a {
+      color: #2563eb;
+      text-decoration: none;
+      font-weight: 500;
+    }
+    .link a:hover {
+      text-decoration: underline;
+    }
+  </style>
+</head>
+<body>
+  <div class="register-box">
+    <h2>Create Account</h2>
+    
+    {% if error %}
+      <div class="error">{{ error }}</div>
+    {% endif %}
+    
+    {% if success %}
+      <div class="success">
+        {{ success }}
+        <br><br>
+        <a href="/login" style="color: #065f46; font-weight: 600;">Go to Login →</a>
+      </div>
+    {% else %}
+    
+    <form method="post" action="/register" id="registerForm">
+      <input type="hidden" name="csrf_token" id="csrf_token" value="">
+      
+      <div class="field">
+        <label for="name">Full Name</label>
+        <input type="text" id="name" name="name" required minlength="2" maxlength="100"
+               placeholder="John Doe">
+      </div>
+      
+      <div class="field">
+        <label for="email">Email Address</label>
+        <input type="email" id="email" name="email" required
+               placeholder="john@example.com">
+        <div class="help-text">You'll use this to log in</div>
+      </div>
+      
+      <div class="field">
+        <label for="password">Password</label>
+        <input type="password" id="password" name="password" required 
+               minlength="8" placeholder="••••••••">
+        <div class="password-strength">
+          <div class="password-strength-bar" id="strengthBar"></div>
+        </div>
+        <div class="help-text">
+          At least 8 characters with uppercase, lowercase, number, and special character
+        </div>
+      </div>
+      
+      <div class="field">
+        <label for="confirm_password">Confirm Password</label>
+        <input type="password" id="confirm_password" name="confirm_password" required
+               placeholder="••••••••">
+      </div>
+      
+      <button type="submit" id="submitBtn">Create Account</button>
+    </form>
+    
+    <div class="link">
+      Already have an account? <a href="/login">Sign in</a>
+    </div>
+    
+    {% endif %}
+  </div>
+  
+  <script>
+    // CSRF token handling
+    function getCookie(name) {
+      const value = `; ${document.cookie}`;
+      const parts = value.split(`; ${name}=`);
+      if (parts.length === 2) return parts.pop().split(';').shift();
+      return '';
+    }
+    
+    // Password strength checker
+    const passwordInput = document.getElementById('password');
+    const strengthBar = document.getElementById('strengthBar');
+    
+    passwordInput.addEventListener('input', function() {
+      const password = this.value;
+      let strength = 0;
+      
+      if (password.length >= 8) strength++;
+      if (/[a-z]/.test(password)) strength++;
+      if (/[A-Z]/.test(password)) strength++;
+      if (/[0-9]/.test(password)) strength++;
+      if (/[^a-zA-Z0-9]/.test(password)) strength++;
+      
+      strengthBar.className = 'password-strength-bar';
+      if (strength >= 5) {
+        strengthBar.classList.add('strength-strong');
+      } else if (strength >= 3) {
+        strengthBar.classList.add('strength-medium');
+      } else if (strength >= 1) {
+        strengthBar.classList.add('strength-weak');
+      }
+    });
+    
+    // Form validation
+    const form = document.getElementById('registerForm');
+    const confirmPassword = document.getElementById('confirm_password');
+    const submitBtn = document.getElementById('submitBtn');
+    
+    form.addEventListener('submit', function(e) {
+      const password = passwordInput.value;
+      const confirm = confirmPassword.value;
+      
+      if (password !== confirm) {
+        e.preventDefault();
+        alert('Passwords do not match');
+        return false;
+      }
+      
+      // Set CSRF token
+      const csrfToken = getCookie('csrf_token');
+      if (csrfToken) {
+        document.getElementById('csrf_token').value = csrfToken;
+      }
+      
+      // Disable button
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Creating account...';
+    });
+    
+    // Request CSRF token on page load
+    window.addEventListener('load', function() {
+      if (!getCookie('csrf_token')) {
+        fetch('/register', { method: 'GET', credentials: 'include' });
+      }
+    });
+  </script>
+</body>
+</html>

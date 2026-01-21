@@ -74,6 +74,14 @@ from security_middleware import (
     get_real_ip
 )
 
+# User Management System
+from user_management import (
+    init_user_management, create_user, verify_email, get_user_by_email,
+    update_last_login, create_password_reset_token,
+    reset_password_with_token, send_verification_email, send_password_reset_email
+)
+
+
 # ---------------- Worker Pool Configuration ----------------
 # CRITICAL: Limit concurrent enrichments to prevent memory exhaustion
 # With 512MB Railway free tier: max 1 worker (sequential processing)
@@ -89,6 +97,7 @@ async def lifespan(app: FastAPI):
     # Startup logic
     os.makedirs(RESULTS_BASE, exist_ok=True)
     init_db()
+    init_user_management()  # Initialize user management system
 
     # CRITICAL: Reset stuck 'running' jobs on startup (Railway restarts kill worker pool)
     with db() as conn:
@@ -3028,7 +3037,316 @@ def enqueue_enrich_charity(item_id: int):
     enrichment_executor.submit(enrich_charity_one, item_id)
 
 # ============================================================================
-# AUTHENTICATION & AUTHORIZATION ENDPOINTS (Phase 1: Critical Security)
+# AUTHENTICATION & AUTHORIZATION ENDPOINTS
+
+# User Management Routes - Add these to app.py
+
+from user_management import (
+    init_user_management, create_user, verify_email, get_user_by_email,
+    update_last_login, list_users, create_password_reset_token,
+    reset_password_with_token, send_verification_email, send_password_reset_email
+)
+
+# Initialize user management on startup
+# Add to lifespan function:
+#   init_user_management()
+
+# ==============================================================================
+# REGISTRATION
+# ==============================================================================
+
+@app.get("/register")
+async def register_page(request: Request):
+    """Render registration page."""
+    csrf_token = csrf_protection.generate_csrf_token()
+    response = templates.TemplateResponse(
+        "register.html",
+        {"request": request}
+    )
+    csrf_protection.set_csrf_cookie(response, csrf_token)
+    return response
+
+
+@app.post("/register")
+@limiter.limit("5/hour")  # Prevent spam registrations
+async def register_user(
+    request: Request,
+    name: str = Form(...),
+    email: str = Form(...),
+    password: str = Form(...),
+    confirm_password: str = Form(...),
+    csrf_token: str = Form(...)
+):
+    """Handle user registration."""
+    # Validate CSRF
+    csrf_cookie = request.cookies.get("csrf_token")
+    if not csrf_cookie or csrf_cookie != csrf_token:
+        return templates.TemplateResponse(
+            "register.html",
+            {"request": request, "error": "Invalid security token"}
+        )
+    
+    # Validate passwords match
+    if password != confirm_password:
+        return templates.TemplateResponse(
+            "register.html",
+            {"request": request, "error": "Passwords do not match"}
+        )
+    
+    # Validate password strength
+    is_valid, msg = validate_password_strength(password)
+    if not is_valid:
+        return templates.TemplateResponse(
+            "register.html",
+            {"request": request, "error": msg}
+        )
+    
+    try:
+        # Create user
+        result = create_user(email, name, password, role="user")
+        
+        # Send verification email
+        base_url = str(request.base_url).rstrip('/')
+        send_verification_email(email, result["verification_token"], base_url)
+        
+        # Log registration
+        log_audit_event(
+            action="user_registered",
+            status="success",
+            user_email=email,
+            ip_address=get_real_ip(request),
+            details=f"New user registered: {name}"
+        )
+        
+        return templates.TemplateResponse(
+            "register.html",
+            {
+                "request": request,
+                "success": f"Account created! Check your email ({email}) for verification link."
+            }
+        )
+        
+    except ValueError as e:
+        return templates.TemplateResponse(
+            "register.html",
+            {"request": request, "error": str(e)}
+        )
+    except Exception as e:
+        log_audit_event(
+            action="user_registration_failed",
+            status="error",
+            user_email=email,
+            details=str(e)
+        )
+        return templates.TemplateResponse(
+            "register.html",
+            {"request": request, "error": "Registration failed. Please try again."}
+        )
+
+
+# ==============================================================================
+# EMAIL VERIFICATION
+# ==============================================================================
+
+@app.get("/verify-email")
+async def verify_email_endpoint(request: Request, token: str):
+    """Verify user email with token."""
+    try:
+        success = verify_email(token)
+        
+        if success:
+            return templates.TemplateResponse(
+                "login.html",
+                {
+                    "request": request,
+                    "success": "Email verified! You can now log in."
+                }
+            )
+        else:
+            return templates.TemplateResponse(
+                "login.html",
+                {
+                    "request": request,
+                    "error": "Invalid or expired verification link."
+                }
+            )
+    except Exception as e:
+        return templates.TemplateResponse(
+            "login.html",
+            {
+                "request": request,
+                "error": "Verification failed. Please contact support."
+            }
+        )
+
+
+# ==============================================================================
+# PASSWORD RESET
+# ==============================================================================
+
+@app.get("/forgot-password")
+async def forgot_password_page(request: Request):
+    """Render forgot password page."""
+    csrf_token = csrf_protection.generate_csrf_token()
+    response = templates.TemplateResponse(
+        "reset_password.html",
+        {"request": request, "token": None}
+    )
+    csrf_protection.set_csrf_cookie(response, csrf_token)
+    return response
+
+
+@app.post("/forgot-password")
+@limiter.limit("3/hour")  # Prevent abuse
+async def request_password_reset(
+    request: Request,
+    email: str = Form(...),
+    csrf_token: str = Form(...)
+):
+    """Request password reset link."""
+    # Validate CSRF
+    csrf_cookie = request.cookies.get("csrf_token")
+    if not csrf_cookie or csrf_cookie != csrf_token:
+        return templates.TemplateResponse(
+            "reset_password.html",
+            {"request": request, "token": None, "error": "Invalid security token"}
+        )
+    
+    try:
+        token = create_password_reset_token(email)
+        
+        if token:
+            base_url = str(request.base_url).rstrip('/')
+            send_password_reset_email(email, token, base_url)
+            
+            log_audit_event(
+                action="password_reset_requested",
+                status="success",
+                user_email=email,
+                ip_address=get_real_ip(request)
+            )
+        
+        # Always show success to prevent email enumeration
+        return templates.TemplateResponse(
+            "reset_password.html",
+            {
+                "request": request,
+                "token": None,
+                "success": "If that email exists, we've sent a reset link. Check your inbox."
+            }
+        )
+        
+    except Exception as e:
+        return templates.TemplateResponse(
+            "reset_password.html",
+            {"request": request, "token": None, "error": "Request failed. Please try again."}
+        )
+
+
+@app.get("/reset-password")
+async def reset_password_page(request: Request, token: str):
+    """Render password reset form with token."""
+    csrf_token = csrf_protection.generate_csrf_token()
+    response = templates.TemplateResponse(
+        "reset_password.html",
+        {"request": request, "token": token}
+    )
+    csrf_protection.set_csrf_cookie(response, csrf_token)
+    return response
+
+
+@app.post("/reset-password")
+@limiter.limit("5/hour")
+async def reset_password_submit(
+    request: Request,
+    token: str = Form(...),
+    password: str = Form(...),
+    confirm_password: str = Form(...),
+    csrf_token: str = Form(...)
+):
+    """Reset password with token."""
+    # Validate CSRF
+    csrf_cookie = request.cookies.get("csrf_token")
+    if not csrf_cookie or csrf_cookie != csrf_token:
+        return templates.TemplateResponse(
+            "reset_password.html",
+            {"request": request, "token": token, "error": "Invalid security token"}
+        )
+    
+    # Validate passwords match
+    if password != confirm_password:
+        return templates.TemplateResponse(
+            "reset_password.html",
+            {"request": request, "token": token, "error": "Passwords do not match"}
+        )
+    
+    # Validate password strength
+    is_valid, msg = validate_password_strength(password)
+    if not is_valid:
+        return templates.TemplateResponse(
+            "reset_password.html",
+            {"request": request, "token": token, "error": msg}
+        )
+    
+    try:
+        success = reset_password_with_token(token, password)
+        
+        if success:
+            log_audit_event(
+                action="password_reset_completed",
+                status="success",
+                ip_address=get_real_ip(request)
+            )
+            
+            return templates.TemplateResponse(
+                "reset_password.html",
+                {
+                    "request": request,
+                    "token": token,
+                    "success": True
+                }
+            )
+        else:
+            return templates.TemplateResponse(
+                "reset_password.html",
+                {
+                    "request": request,
+                    "token": token,
+                    "error": "Invalid or expired reset link."
+                }
+            )
+            
+    except Exception as e:
+        return templates.TemplateResponse(
+            "reset_password.html",
+            {"request": request, "token": token, "error": "Reset failed. Please try again."}
+        )
+
+
+# ==============================================================================
+# USER PROFILE & ADMIN MANAGEMENT
+# ==============================================================================
+
+@app.get("/profile")
+async def user_profile(request: Request, current_user: dict = Depends(get_current_user)):
+    """User profile page."""
+    return templates.TemplateResponse(
+        "profile.html",
+        {"request": request, "user": current_user}
+    )
+
+
+@app.get("/admin/users")
+async def admin_users_list(request: Request, current_user: dict = Depends(get_current_admin_user)):
+    """Admin user management page."""
+    users = list_users()
+    return templates.TemplateResponse(
+        "admin_users.html",
+        {"request": request, "users": users, "current_user": current_user}
+    )
+
+
+# ==============================================================================
 # ============================================================================
 
 @app.get("/login")
